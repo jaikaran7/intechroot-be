@@ -49,7 +49,23 @@ export async function getEmployeeById(id, requestingUser) {
     throw new ForbiddenError();
   }
 
-  return employee;
+  let applicationProfile = null;
+  if (employee.applicationId) {
+    applicationProfile = await prisma.application.findUnique({
+      where: { id: employee.applicationId },
+      select: {
+        id: true,
+        dateOfBirth: true,
+        gender: true,
+        adminDocRequests: {
+          select: { id: true, name: true, createdAt: true },
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+    });
+  }
+
+  return { ...employee, applicationProfile };
 }
 
 export async function updateEmployee(id, data) {

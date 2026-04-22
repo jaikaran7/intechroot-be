@@ -9,6 +9,7 @@ export const profileStepSchema = z.object({
   email: nonEmptyString('Email is required').email('Enter a valid email'),
   phone: nonEmptyString('Phone number is required'),
   dateOfBirth: nonEmptyString('Date of birth is required'),
+  gender: nonEmptyString('Gender is required'),
   nationality: nonEmptyString('Nationality is required'),
   profilePhotoUrl: z.string().trim().min(1, 'Profile photo is required'),
   profilePhotoName: z.string().trim().optional(),

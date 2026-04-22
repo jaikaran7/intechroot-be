@@ -27,6 +27,13 @@ function generateReferenceId(numericSuffix) {
   return `ITR-${String(numericSuffix).padStart(5, '0')}`;
 }
 
+function toDateOnlyString(value) {
+  if (!value) return '';
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toISOString().slice(0, 10);
+}
+
 async function signStoragePath(storagePath) {
   if (!storagePath || typeof storagePath !== 'string') return null;
   try {
@@ -419,8 +426,8 @@ export async function hireApplicant(id) {
         status: 'Active',
         // Auto-populate personal data from application
         personal: {
-          dateOfBirth: '',
-          gender: '',
+          dateOfBirth: toDateOnlyString(application.dateOfBirth),
+          gender: application.gender ?? '',
           address: application.location ?? '',
         },
         // Auto-populate employment data from application

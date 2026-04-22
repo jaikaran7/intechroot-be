@@ -26,6 +26,7 @@ async function getOnboarding(applicationId) {
           email: true,
           phone: true,
           dateOfBirth: true,
+          gender: true,
           nationality: true,
           profilePhotoUrl: true,
           profilePhotoName: true,
@@ -94,6 +95,7 @@ export async function submitProfileStep(applicationId, data, requestingUser) {
     email: data.email.trim().toLowerCase(),
     phone: data.phone.trim(),
     dateOfBirth: dob,
+    gender: data.gender.trim(),
     nationality: data.nationality.trim(),
   };
   // Only overwrite the stored photo path when the caller sends a raw storage path,
@@ -139,6 +141,7 @@ export async function patchApplicantProfile(applicationId, data, requestingUser)
     if (!dob) throw new AppError('Date of birth is invalid', 400);
     update.dateOfBirth = dob;
   }
+  if (data.gender != null) update.gender = data.gender.trim();
   if (data.nationality != null) update.nationality = data.nationality.trim();
   if (data.profilePhotoUrl != null) {
     const val = data.profilePhotoUrl.trim();

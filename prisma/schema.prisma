@@ -155,6 +155,7 @@ model Application {
   resumeFileUrl    String?
   // Onboarding personal identity fields (filled during Profile step)
   dateOfBirth      DateTime?
+  gender           String?
   nationality      String?
   profilePhotoUrl  String?
   profilePhotoName String?
