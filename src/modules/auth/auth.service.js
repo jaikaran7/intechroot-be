@@ -30,7 +30,8 @@ export async function register({ email, password, name, role }, actingUser) {
 }
 
 export async function login({ email, password }) {
-  const user = await prisma.user.findUnique({ where: { email } });
+  const emailNorm = String(email || '').trim().toLowerCase();
+  const user = await prisma.user.findUnique({ where: { email: emailNorm } });
   if (!user || !user.isActive) throw new UnauthorizedError('Invalid email or password');
 
   const valid = await bcrypt.compare(password, user.passwordHash);
@@ -218,7 +219,8 @@ export async function applicantLogin({ email, password }) {
 // ─── Employee Auth ─────────────────────────────────────────
 
 export async function verifyEmployee({ email, password }) {
-  const user = await prisma.user.findUnique({ where: { email } });
+  const emailNorm = String(email || '').trim().toLowerCase();
+  const user = await prisma.user.findUnique({ where: { email: emailNorm } });
   if (!user || user.role !== 'employee' || !user.isActive) {
     throw new UnauthorizedError('Invalid credentials');
   }
@@ -226,7 +228,7 @@ export async function verifyEmployee({ email, password }) {
   const valid = await bcrypt.compare(password, user.passwordHash);
   if (!valid) throw new UnauthorizedError('Invalid credentials');
 
-  const employee = await prisma.employee.findUnique({ where: { email } });
+  const employee = await prisma.employee.findUnique({ where: { email: emailNorm } });
   if (!employee) throw new NotFoundError('Employee record not found');
 
   const payload = { userId: user.id, employeeId: employee.id, role: 'employee', email: user.email };

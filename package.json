@@ -13,7 +13,8 @@
     "db:migrate": "prisma migrate dev",
     "db:push": "prisma db push",
     "db:studio": "prisma studio",
-    "db:seed": "node prisma/seed.js"
+    "db:seed": "node prisma/seed.js",
+    "db:backfill-employee-users": "node scripts/backfill-employee-portal-users.js"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",

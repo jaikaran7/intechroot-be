@@ -6,6 +6,7 @@ import { getPagination, paginatedResponse } from '../../utils/pagination.js';
 import { sendEmail, stageAdvancedEmail, applicantPortalApprovedEmail } from '../../utils/email.js';
 import { applicantUsesPasswordLogin } from '../../utils/applicantAuthMode.js';
 import { uploadToStorage, getSignedUrl } from '../../config/supabase.js';
+import { getDefaultEmployeePortalPassword } from '../../utils/employeePortalDefaults.js';
 
 const STAGE_ORDER = [
   'Application Submitted',
@@ -410,15 +411,22 @@ export async function hireApplicant(id) {
     throw new AppError('Applicant must complete onboarding before being hired', 400);
   }
 
-  // Atomic transaction: create employee + update application + link documents
+  const emailLower = String(application.email || '').trim().toLowerCase();
+  if (!emailLower) {
+    throw new AppError('Application email is required to create employee login', 400);
+  }
+
+  // Atomic transaction: create employee + employee User (portal) + update application + link documents
   const result = await prisma.$transaction(async (tx) => {
     await tx.user.deleteMany({ where: { applicantApplicationId: id } });
+
+    const passwordHash = await bcrypt.hash(getDefaultEmployeePortalPassword(), 12);
 
     const employee = await tx.employee.create({
       data: {
         applicationId: id,
         name: application.name,
-        email: application.email,
+        email: emailLower,
         phone: application.phone ?? '',
         role: application.role,
         department: 'General',
@@ -464,7 +472,46 @@ export async function hireApplicant(id) {
       });
     }
 
-    return { application: updated, employee };
+    const existingUser = await tx.user.findUnique({ where: { email: emailLower } });
+    if (existingUser) {
+      if (existingUser.role === 'super_admin' || existingUser.role === 'admin') {
+        throw new ConflictError('This email is already used by an admin account.');
+      }
+      if (
+        existingUser.role === 'applicant' &&
+        existingUser.applicantApplicationId &&
+        existingUser.applicantApplicationId !== id
+      ) {
+        throw new ConflictError('This email is tied to another applicant portal account.');
+      }
+      await tx.user.update({
+        where: { id: existingUser.id },
+        data: {
+          passwordHash,
+          name: application.name,
+          role: 'employee',
+          applicantApplicationId: null,
+          isActive: true,
+        },
+      });
+    } else {
+      await tx.user.create({
+        data: {
+          email: emailLower,
+          name: application.name,
+          passwordHash,
+          role: 'employee',
+          applicantApplicationId: null,
+        },
+      });
+    }
+
+    return {
+      application: updated,
+      employee,
+      /** Same email as the application; password from getDefaultEmployeePortalPassword() (default Employee@123). */
+      employeeAuth: { email: emailLower, defaultPasswordConfigured: true },
+    };
   });
 
   return result;

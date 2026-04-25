@@ -64,6 +64,8 @@ export async function getDashboardStats() {
     },
     pendingTimesheets,
     recentApplications,
+    /** Reserved for payroll module; when null/missing, clients show a non-misleading empty state. */
+    payroll: null,
   };
 }
 
