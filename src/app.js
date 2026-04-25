@@ -28,7 +28,15 @@ app.use(helmet({
       scriptSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
       imgSrc: ["'self'", 'data:', 'https://*.supabase.co'],
-      connectSrc: ["'self'", process.env.SUPABASE_URL || ''].filter(Boolean),
+      // Browsers may apply this CSP to API JSON responses. Allow typical HTTPS
+      // fetches (frontend → API) while keeping a tight default policy.
+      connectSrc: [
+        "'self'",
+        'https:',
+        'wss:',
+        'data:',
+        process.env.SUPABASE_URL || '',
+      ].filter(Boolean),
     },
   },
   crossOriginEmbedderPolicy: false,
