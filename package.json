@@ -8,6 +8,7 @@
     "postinstall": "prisma generate",
     "predev": "prisma generate",
     "dev": "node --watch server.js",
+    "build": "prisma generate && node scripts/check-build.js",
     "start": "node server.js",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
