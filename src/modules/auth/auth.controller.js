@@ -3,7 +3,7 @@ import * as AuthService from './auth.service.js';
 const COOKIE_OPTIONS = {
   httpOnly: true,
   secure: process.env.NODE_ENV === 'production',
-  sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+  sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
   maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
 };
 
@@ -26,7 +26,7 @@ export async function logout(req, res, next) {
   try {
     const refreshToken = req.cookies?.refreshToken;
     await AuthService.logout(refreshToken);
-    res.clearCookie('refreshToken');
+    res.clearCookie('refreshToken', COOKIE_OPTIONS);
     res.json({ success: true, message: 'Logged out successfully' });
   } catch (err) { next(err); }
 }
