@@ -1,15 +1,24 @@
 import { Resend } from 'resend';
 
-const resend = new Resend(process.env.RESEND_API_KEY);
 const FROM = process.env.FROM_EMAIL || 'noreply@intechroot.com';
+let resend;
+
+function getResendClient() {
+  if (!process.env.RESEND_API_KEY) return null;
+  if (!resend) {
+    resend = new Resend(process.env.RESEND_API_KEY);
+  }
+  return resend;
+}
 
 export async function sendEmail({ to, subject, html }) {
-  if (!process.env.RESEND_API_KEY) {
+  const client = getResendClient();
+  if (!client) {
     console.warn('[email] RESEND_API_KEY not set — skipping email send');
     return;
   }
   try {
-    await resend.emails.send({ from: FROM, to, subject, html });
+    await client.emails.send({ from: FROM, to, subject, html });
   } catch (err) {
     console.error('[email] Failed to send email:', err.message);
   }
