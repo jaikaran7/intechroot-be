@@ -82,9 +82,14 @@ export async function getDownloadUrl(id, requestingUser = null) {
   return { signedUrl, fileName: doc.fileName };
 }
 
+const DOCUMENT_VERIFICATION_VALUES = ['unapproved', 'waiting', 'verified', 'rejected'];
+
 export async function verifyDocument(id, verification) {
   const doc = await prisma.document.findUnique({ where: { id } });
   if (!doc) throw new NotFoundError('Document not found');
+  if (!DOCUMENT_VERIFICATION_VALUES.includes(verification)) {
+    throw new AppError('Invalid verification value', 400);
+  }
 
   return prisma.document.update({ where: { id }, data: { verification } });
 }

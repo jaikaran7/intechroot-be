@@ -46,6 +46,7 @@ router.patch(
 // Interviews
 router.post('/:id/interviews', authenticate, requireRole('admin', 'super_admin'), validateBody(createInterviewSchema), AppController.createInterview);
 router.patch('/:id/interviews/:iid', authenticate, requireRole('admin', 'super_admin'), validateBody(updateInterviewSchema), AppController.updateInterview);
+router.delete('/:id/interviews/:iid', authenticate, requireRole('admin', 'super_admin', 'applicant'), AppController.deleteInterview);
 
 // Messages
 router.post('/:id/messages', authenticate, requireRole('admin', 'super_admin'), validateBody(createMessageSchema), AppController.createMessage);

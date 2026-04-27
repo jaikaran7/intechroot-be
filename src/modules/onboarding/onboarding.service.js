@@ -263,20 +263,39 @@ export async function adminEnableOnboarding(applicationId) {
 }
 
 export async function adminRequestDocument(applicationId, name) {
-  const onboarding = await getOnboarding(applicationId);
-  if (!onboarding.enabled) {
-    throw new AppError('Onboarding must be enabled before requesting additional documents', 400);
+  const trimmed = String(name || '').trim();
+  if (!trimmed) throw new AppError('Document name is required', 400);
+
+  const application = await prisma.application.findUnique({
+    where: { id: applicationId },
+    select: { id: true, lifecycleStage: true },
+  });
+  if (!application) throw new NotFoundError('Application not found');
+
+  let onboarding = await prisma.onboardingState.findUnique({ where: { applicationId } });
+  if (!onboarding) {
+    await prisma.onboardingState.create({
+      data: { applicationId, enabled: false },
+    });
+    onboarding = await prisma.onboardingState.findUnique({ where: { applicationId } });
   }
-  // If the applicant had previously completed the documents step, reopen it so the new request
-  // blocks progress until the applicant uploads the new document.
-  if (onboarding.documentsCompleted) {
+
+  // Reopen applicant onboarding only while they are still in the hiring pipeline (not hired).
+  const hired = application.lifecycleStage === 'employee';
+  if (!hired && onboarding.enabled && onboarding.documentsCompleted) {
     await prisma.onboardingState.update({
       where: { applicationId },
-      data: { documentsCompleted: false, bgvApplicantAcknowledged: false, finalSubmitted: false, step: 2 },
+      data: {
+        documentsCompleted: false,
+        bgvApplicantAcknowledged: false,
+        finalSubmitted: false,
+        step: 2,
+      },
     });
   }
+
   return prisma.adminDocumentRequest.create({
-    data: { applicationId, name },
+    data: { applicationId, name: trimmed },
   });
 }
 

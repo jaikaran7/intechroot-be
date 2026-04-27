@@ -15,6 +15,11 @@ export async function uploadDocument(req, res, next) {
     if (req.user?.role === 'employee' && employeeId && req.user.employeeId !== employeeId) {
       return next(new ForbiddenError());
     }
+    if (req.user?.role === 'employee' && employeeId) {
+      if (!expiryDate || String(expiryDate).trim() === '') {
+        throw new AppError('Expiry date is required for employee document uploads', 400);
+      }
+    }
 
     const doc = await DocumentsService.uploadDocument(
       req.file.buffer,
@@ -80,6 +85,11 @@ export async function upsertDocument(req, res, next) {
     }
     if (req.user?.role === 'employee' && employeeId && req.user.employeeId !== employeeId) {
       return next(new ForbiddenError());
+    }
+    if (req.user?.role === 'employee' && employeeId) {
+      if (!expiryDate || String(expiryDate).trim() === '') {
+        throw new AppError('Expiry date is required for employee document uploads', 400);
+      }
     }
     const doc = await DocumentsService.upsertDocument(
       req.file.buffer,

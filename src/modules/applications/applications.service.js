@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import prisma from '../../config/db.js';
-import { NotFoundError, ConflictError, AppError } from '../../utils/errors.js';
+import { NotFoundError, ConflictError, AppError, ForbiddenError } from '../../utils/errors.js';
 import { getPagination, paginatedResponse } from '../../utils/pagination.js';
 import { sendEmail, stageAdvancedEmail, applicantPortalApprovedEmail } from '../../utils/email.js';
 import { applicantUsesPasswordLogin } from '../../utils/applicantAuthMode.js';
@@ -655,6 +655,20 @@ export async function updateInterview(applicationId, interviewId, data) {
       ...(data.notes !== undefined && { notes: data.notes }),
     },
   });
+}
+
+export async function deleteInterview(applicationId, interviewId, requestingUser) {
+  const interview = await prisma.interview.findFirst({
+    where: { id: interviewId, applicationId },
+  });
+  if (!interview) throw new NotFoundError('Interview not found');
+
+  if (requestingUser?.role === 'applicant' && requestingUser.applicationId !== applicationId) {
+    throw new ForbiddenError();
+  }
+
+  await prisma.interview.delete({ where: { id: interviewId } });
+  return { deleted: true };
 }
 
 export async function createMessage(applicationId, text, createdBy) {

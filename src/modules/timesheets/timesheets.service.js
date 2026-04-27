@@ -4,6 +4,7 @@ import { getPagination, paginatedResponse } from '../../utils/pagination.js';
 
 function hourVal(v) {
   if (v === null || v === undefined || v === '') return 0;
+  if (v === 'L' || v === 'O') return 0;
   const n = Number(v);
   return Number.isNaN(n) ? 0 : n;
 }
@@ -80,7 +81,8 @@ export async function getEmployeeTimesheets(employeeId, query, requestingUser) {
 }
 
 /**
- * Create or update a timesheet as Draft (employee only). Submitted / approved rows cannot be edited here.
+ * Create or update timesheet hours (employee only). Approved rows cannot be edited.
+ * Draft / Rejected → saved as draft; Pending → hours updated, stays pending for admin review.
  */
 export async function saveTimesheetDraft(employeeId, data, requestingUser) {
   if (requestingUser?.role === 'employee' && requestingUser.employeeId !== employeeId) {
@@ -98,11 +100,24 @@ export async function saveTimesheetDraft(employeeId, data, requestingUser) {
     where: { employeeId_weekStart: { employeeId, weekStart } },
   });
 
-  if (existing && (existing.status === 'Pending' || existing.status === 'Approved')) {
-    throw new AppError('This timesheet is already submitted or approved and cannot be edited.', 400);
+  if (existing && existing.status === 'Approved') {
+    throw new AppError('This timesheet is already approved and cannot be edited.', 400);
   }
 
   if (existing) {
+    if (existing.status === 'Pending') {
+      return prisma.timesheet.update({
+        where: { id: existing.id },
+        data: {
+          weekData: data.weekData,
+          total,
+          periodStart,
+          periodEnd,
+          status: 'Pending',
+        },
+      });
+    }
+
     const nextStatus = existing.status === 'Rejected' ? 'Rejected' : 'Draft';
     return prisma.timesheet.update({
       where: { id: existing.id },

@@ -1,13 +1,17 @@
 import { z } from 'zod';
 
-/** Hours per day: number 0–24 or null (not yet entered). */
+/** Hours 0–24, null (empty), or L / O (leave / off). */
 function dayField() {
   return z.preprocess((val) => {
     if (val === null || val === undefined || val === '') return null;
+    if (typeof val === 'string') {
+      const u = val.trim().toUpperCase();
+      if (u === 'L' || u === 'O') return u;
+    }
     const n = typeof val === 'number' ? val : Number(val);
     if (Number.isNaN(n)) return null;
     return Math.min(24, Math.max(0, n));
-  }, z.union([z.null(), z.number().min(0).max(24)]));
+  }, z.union([z.null(), z.number().min(0).max(24), z.literal('L'), z.literal('O')]));
 }
 
 const weekDataSchema = z.object({

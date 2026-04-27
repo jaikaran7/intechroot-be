@@ -295,11 +295,24 @@ model Employee {
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
 
-  timesheets Timesheet[]
-  documents  Document[]
-  payslips   Payslip[]
+  timesheets            Timesheet[]
+  documents             Document[]
+  payslips              Payslip[]
+  extraDocumentRequests EmployeeExtraDocumentRequest[]
 
   @@map("employees")
+}
+
+model EmployeeExtraDocumentRequest {
+  id         String   @id @default(uuid())
+  employeeId String
+  name       String
+  createdAt  DateTime @default(now())
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId])
+  @@map("employee_extra_document_requests")
 }
 
 model ApplicationTimesheet {

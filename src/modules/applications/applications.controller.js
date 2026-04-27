@@ -1,6 +1,6 @@
 import * as AppService from './applications.service.js';
 import { createApplicationSchema } from './applications.schema.js';
-import { ValidationError } from '../../utils/errors.js';
+import { ValidationError, ForbiddenError } from '../../utils/errors.js';
 
 export async function getApplications(req, res, next) {
   try {
@@ -88,6 +88,16 @@ export async function updateInterview(req, res, next) {
   try {
     const interview = await AppService.updateInterview(req.params.id, req.params.iid, req.body);
     res.json({ success: true, data: interview });
+  } catch (err) { next(err); }
+}
+
+export async function deleteInterview(req, res, next) {
+  try {
+    if (req.user?.role === 'applicant' && req.user.applicationId !== req.params.id) {
+      throw new ForbiddenError('You can only delete interviews on your own application');
+    }
+    await AppService.deleteInterview(req.params.id, req.params.iid, req.user);
+    res.json({ success: true, data: { deleted: true } });
   } catch (err) { next(err); }
 }
 
