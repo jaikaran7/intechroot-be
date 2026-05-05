@@ -1,0 +1,414 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─── Enums ────────────────────────────────────────────────
+
+enum UserRole {
+  super_admin
+  admin
+  ADMIN
+  employee
+  applicant
+}
+
+enum JobStatus {
+  Active
+  Draft
+  Closed
+}
+
+enum ContractType {
+  Permanent
+  Consulting
+}
+
+enum EmploymentType {
+  Full_Time
+  Part_Time
+  Contract
+}
+
+enum LifecycleStage {
+  applied
+  screening
+  technical
+  client
+  offer
+  onboarding
+  employee
+}
+
+enum EmployeeStatus {
+  Active
+  On_Leave
+  Inactive
+}
+
+enum InterviewStatus {
+  scheduled
+  completed
+  cancelled
+  rescheduled
+}
+
+enum TimesheetStatus {
+  Draft
+  Pending
+  Approved
+  Rejected
+}
+
+enum DocumentVerification {
+  unapproved
+  waiting
+  verified
+  rejected
+}
+
+enum DocumentStatus {
+  not_uploaded
+  uploaded
+  expired
+  expiring_soon
+}
+
+// ─── Models ───────────────────────────────────────────────
+
+model User {
+  id           String    @id @default(uuid())
+  email        String    @unique
+  passwordHash String
+  name         String
+  role         UserRole  @default(applicant)
+  isActive     Boolean   @default(true)
+  // When set, this applicant user is tied to one application for portal login.
+  applicantApplicationId String?    @unique
+  applicantApplication   Application? @relation("ApplicantPortalUser", fields: [applicantApplicationId], references: [id], onDelete: SetNull)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  refreshTokens RefreshToken[]
+  passwordResetTokens PasswordResetToken[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("refresh_tokens")
+}
+
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  userId    String
+  role      UserRole
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, role])
+  @@map("password_reset_tokens")
+}
+
+model Job {
+  id             String     @id @default(uuid())
+  /// Admin-controlled ordering for job cards/lists (lower appears first).
+  displayOrder   Int        @default(0)
+  title          String
+  sector         String
+  category       String     @default("")
+  seniority      String
+  contract       ContractType @default(Permanent)
+  jobType        String     @default("Full-time")
+  location       String
+  salary         String     @default("")
+  status         JobStatus  @default(Active)
+  featured       Boolean    @default(false)
+  postedDate     DateTime   @default(now())
+  description    String     @default("")
+  requirements   String[]
+  skills         String[]
+  experience     String     @default("")
+  applicantsCount Int       @default(0)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  applications Application[]
+
+  @@map("jobs")
+}
+
+model Application {
+  id               String         @id @default(uuid())
+  referenceId      String         @unique
+  jobId            String?
+  name             String
+  email            String
+  phone            String
+  role             String         @default("")
+  experience       String         @default("")
+  location         String         @default("")
+  linkedIn         String?
+  portfolio        String?
+  skills           String[]
+  resumeFileName   String?
+  resumeFileUrl    String?
+  // Onboarding personal identity fields (filled during Profile step)
+  dateOfBirth      DateTime?
+  gender           String?
+  nationality      String?
+  profilePhotoUrl  String?
+  profilePhotoName String?
+  status           String         @default("In Review")
+  lifecycleStage   LifecycleStage @default(applied)
+  currentStageIndex Int           @default(0)
+  appliedDate      DateTime       @default(now())
+  employeeId       String?
+  // When set, the applicant may sign in (after admin approves the application).
+  portalApprovedAt DateTime?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  job              Job?                   @relation(fields: [jobId], references: [id])
+  applicantPortalUser User?             @relation("ApplicantPortalUser")
+  stages           ApplicationStage[]
+  messages         ApplicationMessage[]
+  interviews       Interview[]
+  onboarding       OnboardingState?
+  documents        Document[]
+  adminDocRequests AdminDocumentRequest[]
+  timesheets       ApplicationTimesheet[]
+
+  @@map("applications")
+}
+
+model ApplicationStage {
+  id            String   @id @default(uuid())
+  applicationId String
+  name          String
+  date          DateTime @default(now())
+  status        String   @default("completed")
+
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@map("application_stages")
+}
+
+model ApplicationMessage {
+  id            String   @id @default(uuid())
+  applicationId String
+  text          String
+  createdBy     String   @default("admin")
+  createdAt     DateTime @default(now())
+
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@map("application_messages")
+}
+
+model Interview {
+  id            String          @id @default(uuid())
+  applicationId String
+  title         String
+  type          String          @default("Technical")
+  date          DateTime
+  time          String
+  link          String?
+  notes         String?
+  status        InterviewStatus @default(scheduled)
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@map("interviews")
+}
+
+model OnboardingState {
+  id                      String  @id @default(uuid())
+  applicationId           String  @unique
+  enabled                 Boolean @default(false)
+  step                    Int     @default(1)
+  completed               Boolean @default(false)
+  profileCompleted        Boolean @default(false)
+  adminProfileApproved    Boolean @default(false)
+  documentsCompleted      Boolean @default(false)
+  bgvCompleted            Boolean @default(false)
+  bgvApplicantAcknowledged Boolean @default(false)
+  finalSubmitted          Boolean @default(false)
+  hireCompleted           Boolean @default(false)
+  bgvLink                 String?
+  bgvNote                 String?
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@map("onboarding_states")
+}
+
+model AdminDocumentRequest {
+  id            String @id @default(uuid())
+  applicationId String
+  name          String
+  createdAt     DateTime @default(now())
+
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@map("admin_document_requests")
+}
+
+model Document {
+  id                 String               @id @default(uuid())
+  applicationId      String?
+  employeeId         String?
+  templateKey        String
+  name               String
+  fileName           String?
+  storagePath        String?
+  fileUrl            String?
+  expiryDate         DateTime?
+  status             DocumentStatus       @default(not_uploaded)
+  verification       DocumentVerification @default(unapproved)
+  uploadedAt         DateTime?
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+
+  application Application? @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  employee    Employee?     @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@map("documents")
+}
+
+model Employee {
+  id            String         @id @default(uuid())
+  applicationId String?        @unique
+  name          String
+  role          String
+  department    String
+  client        String         @default("")
+  email         String         @unique
+  phone         String         @default("")
+  status        EmployeeStatus @default(Active)
+  personal      Json           @default("{}")
+  employment    Json           @default("{}")
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  timesheets            Timesheet[]
+  documents             Document[]
+  payslips              Payslip[]
+  extraDocumentRequests EmployeeExtraDocumentRequest[]
+
+  @@map("employees")
+}
+
+model EmployeeExtraDocumentRequest {
+  id         String   @id @default(uuid())
+  employeeId String
+  name       String
+  createdAt  DateTime @default(now())
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId])
+  @@map("employee_extra_document_requests")
+}
+
+model EmployeeAssignment {
+  id          String   @id @default(uuid())
+  adminUserId String
+  employeeId  String
+  assignedAt  DateTime @default(now())
+  isActive    Boolean  @default(true)
+
+  @@unique([adminUserId, employeeId])
+  @@index([adminUserId, isActive])
+  @@index([employeeId, isActive])
+  @@map("employee_assignments")
+}
+
+model AdminProfile {
+  id          String   @id @default(uuid())
+  adminUserId String   @unique
+  company     String   @default("")
+  status      String   @default("Active")
+  permissions Json     @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("admin_profiles")
+}
+
+model ApplicationTimesheet {
+  id            String          @id @default(uuid())
+  applicationId String
+  weekStart     DateTime
+  weekData      Json
+  total         Float           @default(0)
+  status        TimesheetStatus @default(Draft)
+  rejectionNote String?
+  submittedAt   DateTime?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@map("application_timesheets")
+}
+
+model Timesheet {
+  id            String          @id @default(uuid())
+  employeeId    String
+  weekStart     DateTime
+  /// Inclusive calendar dates for the worked period (may be a partial week). Display + validation.
+  periodStart   DateTime?
+  periodEnd     DateTime?
+  weekData      Json
+  total         Float           @default(0)
+  status        TimesheetStatus @default(Draft)
+  rejectionNote String?
+  submittedAt   DateTime?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, weekStart])
+  @@map("timesheets")
+}
+
+model Payslip {
+  id          String   @id @default(uuid())
+  employeeId  String
+  periodStart DateTime
+  periodEnd   DateTime
+  grossPay    Float
+  deductions  Float    @default(0)
+  netPay      Float
+  fileUrl     String?
+  notes       String?
+  createdAt   DateTime @default(now())
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@map("payslips")
+}
+
