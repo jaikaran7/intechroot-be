@@ -25,6 +25,11 @@ const employmentShape = z.object({
 /** Accepts nested personal/employment and flat keys from the profile form (admin UI). */
 export const updateEmployeeSchema = z
   .object({
+    employeeCode: z
+      .string()
+      .trim()
+      .regex(/^INTR-\d{2}-\d{4}$/, 'Employee ID must match INTR-YY-0001')
+      .optional(),
     name: z.string().min(1).optional(),
     role: z.string().optional(),
     department: z.string().optional(),

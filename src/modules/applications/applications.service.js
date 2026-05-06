@@ -43,6 +43,14 @@ function generateReferenceId(numericSuffix) {
   return `ITR-${String(numericSuffix).padStart(5, '0')}`;
 }
 
+function currentYear2() {
+  return String(new Date().getFullYear()).slice(-2);
+}
+
+function generateEmployeeCode(year2, numericSuffix) {
+  return `INTR-${year2}-${String(numericSuffix).padStart(4, '0')}`;
+}
+
 function toDateOnlyString(value) {
   if (!value) return '';
   const date = value instanceof Date ? value : new Date(value);
@@ -488,9 +496,23 @@ export async function hireApplicant(id) {
 
     const passwordHash = await bcrypt.hash(getDefaultEmployeePortalPassword(), 12);
 
+    // Generate sequential employee code, scoped to current year (INTR-YY-0001).
+    const yy = currentYear2();
+    const prefix = `INTR-${yy}-`;
+    const lastForYear = await tx.employee.findFirst({
+      where: { employeeCode: { startsWith: prefix } },
+      orderBy: { employeeCode: 'desc' },
+      select: { employeeCode: true },
+    });
+    const lastNum = lastForYear?.employeeCode
+      ? Number(String(lastForYear.employeeCode).slice(prefix.length))
+      : 0;
+    const employeeCode = generateEmployeeCode(yy, (Number.isFinite(lastNum) ? lastNum : 0) + 1);
+
     const employee = await tx.employee.create({
       data: {
         applicationId: id,
+        employeeCode,
         name: application.name,
         email: emailLower,
         phone: application.phone ?? '',
@@ -596,7 +618,7 @@ export async function hireApplicant(id) {
           return '';
         }
       })(),
-      employeeId: result.employee.id,
+      employeeId: result.employee.employeeCode || result.employee.id,
       officialEmail: result.employee.email,
       tempPassword: getDefaultEmployeePortalPassword(),
       portalUrl,

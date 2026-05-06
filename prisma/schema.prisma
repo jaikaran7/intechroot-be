@@ -299,6 +299,9 @@ model Document {
 
 model Employee {
   id            String         @id @default(uuid())
+  /// Human-friendly employee identifier shown in UI/emails (e.g. INTR-26-0001).
+  /// Auto-generated on creation but editable by super_admin.
+  employeeCode  String?        @unique
   applicationId String?        @unique
   name          String
   role          String

@@ -104,6 +104,7 @@ export async function updateEmployee(id, body, requestingUser = null) {
   }
 
   const isEmployee = requestingUser?.role === 'employee';
+  const isSuperAdmin = requestingUser?.role === 'super_admin';
   const existingPersonal = asObjectRecord(existing.personal);
   const existingEmployment = asObjectRecord(existing.employment);
 
@@ -145,6 +146,14 @@ export async function updateEmployee(id, body, requestingUser = null) {
   }
 
   const data = { personal, employment };
+  if (body.employeeCode !== undefined) {
+    if (!isSuperAdmin) throw new ForbiddenError('Only super admin can edit employee ID');
+    const next = String(body.employeeCode || '').trim();
+    if (!/^INTR-\d{2}-\d{4}$/.test(next)) {
+      throw new AppError('Employee ID must match INTR-YY-0001', 400, 'VALIDATION_ERROR');
+    }
+    data.employeeCode = next;
+  }
   if (body.name !== undefined) data.name = body.name;
   if (body.department !== undefined) data.department = body.department;
   if (body.client !== undefined) data.client = body.client;
