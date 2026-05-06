@@ -103,6 +103,25 @@ function parseReferenceIdSuffix(referenceId) {
   return Number.isFinite(n) ? n : null;
 }
 
+async function getNextReferenceId(tx) {
+  // Grab a small window of latest referenceIds and pick the first parseable ITR-xxxxx.
+  // This protects us if older seed/test rows used a different format.
+  const candidates = await tx.application.findMany({
+    select: { referenceId: true },
+    orderBy: { referenceId: 'desc' },
+    take: 25,
+  });
+  let lastNum = 0;
+  for (const row of candidates) {
+    const n = parseReferenceIdSuffix(row?.referenceId);
+    if (n != null) {
+      lastNum = n;
+      break;
+    }
+  }
+  return generateReferenceId(lastNum + 1);
+}
+
 export async function serializeApplication(application) {
   if (!application) return null;
 
@@ -335,42 +354,52 @@ export async function createApplication(data, file = null) {
         if (existing) throw new ConflictError('You have already applied for this position');
       }
 
-      // IMPORTANT: do not use count() for referenceId — deletions create gaps and can cause collisions.
-      // referenceId is zero-padded, so lexicographic order matches numeric order.
-      const last = await tx.application.findFirst({
-        select: { referenceId: true },
-        orderBy: { referenceId: 'desc' },
-      });
-      const lastNum = parseReferenceIdSuffix(last?.referenceId) ?? 0;
-      const referenceId = generateReferenceId(lastNum + 1);
-
-      return tx.application.create({
-        data: {
-          referenceId,
-          jobId: data.jobId || null,
-          name: data.name,
-          email: normalizedEmail,
-          phone: data.phone,
-          role: data.discipline,
-          experience: data.experience,
-          location: data.location || '',
-          linkedIn: data.linkedIn || null,
-          portfolio: data.portfolio || null,
-          skills: data.skills || [],
-          resumeFileName: file?.originalname || data.resumeFileName || null,
-          status: 'In Review',
-          lifecycleStage: 'applied',
-          currentStageIndex: 0,
-          portalApprovedAt: null,
-          stages: {
-            create: [{ name: 'Application Submitted', status: 'completed' }],
-          },
-          onboarding: {
-            create: {},
-          },
-        },
-        include: { onboarding: true },
-      });
+      // Retry referenceId generation on rare collisions (concurrent submits).
+      // We intentionally keep this inside the transaction so it remains consistent.
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        const referenceId = await getNextReferenceId(tx);
+        try {
+          return await tx.application.create({
+            data: {
+              referenceId,
+              jobId: data.jobId || null,
+              name: data.name,
+              email: normalizedEmail,
+              phone: data.phone,
+              role: data.discipline,
+              experience: data.experience,
+              location: data.location || '',
+              linkedIn: data.linkedIn || null,
+              portfolio: data.portfolio || null,
+              skills: data.skills || [],
+              resumeFileName: file?.originalname || data.resumeFileName || null,
+              status: 'In Review',
+              lifecycleStage: 'applied',
+              currentStageIndex: 0,
+              portalApprovedAt: null,
+              stages: {
+                create: [{ name: 'Application Submitted', status: 'completed' }],
+              },
+              onboarding: {
+                create: {},
+              },
+            },
+            include: { onboarding: true },
+          });
+        } catch (err) {
+          const target = err?.meta?.target;
+          const targets = Array.isArray(target) ? target : target != null ? [String(target)] : [];
+          const isReferenceCollision =
+            err?.code === 'P2002' &&
+            (targets.includes('referenceId') || targets.some((t) => String(t).includes('referenceId')));
+          if (isReferenceCollision) {
+            // Try again with a fresh referenceId.
+            continue;
+          }
+          throw err;
+        }
+      }
+      throw new AppError('Could not assign a reference number. Please submit again.', 409, 'REFERENCE_COLLISION');
     },
     {
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
