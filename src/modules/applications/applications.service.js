@@ -567,6 +567,10 @@ export async function hireApplicant(id) {
           dateOfBirth: toDateOnlyString(application.dateOfBirth),
           gender: application.gender ?? '',
           address: application.location ?? '',
+          // Keep a link to the onboarding profile photo for employee portal + admin views.
+          // Stored as raw storage path (signed on read by employee APIs).
+          profilePhotoUrl: application.profilePhotoUrl ?? null,
+          profilePhotoName: application.profilePhotoName ?? null,
         },
         // Auto-populate employment data from application
         employment: {

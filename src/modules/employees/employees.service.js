@@ -1,11 +1,35 @@
 import prisma from '../../config/db.js';
 import { NotFoundError, ForbiddenError, AppError } from '../../utils/errors.js';
 import { getPagination, paginatedResponse } from '../../utils/pagination.js';
+import { getSignedUrl } from '../../config/supabase.js';
 
 function asObjectRecord(value) {
   if (value == null) return {};
   if (typeof value === 'object' && !Array.isArray(value)) return { ...value };
   return {};
+}
+
+async function signIfStoragePath(value) {
+  if (!value || typeof value !== 'string') return value || null;
+  if (/^https?:\/\//i.test(value)) return value;
+  try {
+    return (await getSignedUrl(value, 3600)) || value;
+  } catch {
+    return value;
+  }
+}
+
+async function attachSignedEmployeePhoto(employee) {
+  if (!employee) return employee;
+  const personal = asObjectRecord(employee.personal);
+  const signed = await signIfStoragePath(personal.profilePhotoUrl || null);
+  return {
+    ...employee,
+    personal: {
+      ...personal,
+      profilePhotoUrl: signed,
+    },
+  };
 }
 
 export async function getEmployees(query) {
@@ -36,7 +60,8 @@ export async function getEmployees(query) {
     prisma.employee.count({ where }),
   ]);
 
-  return paginatedResponse(employees, total, page, limit);
+  const withSignedPhotos = await Promise.all(employees.map((e) => attachSignedEmployeePhoto(e)));
+  return paginatedResponse(withSignedPhotos, total, page, limit);
 }
 
 export async function getEmployeeById(id, requestingUser) {
@@ -67,6 +92,8 @@ export async function getEmployeeById(id, requestingUser) {
         id: true,
         dateOfBirth: true,
         gender: true,
+        profilePhotoUrl: true,
+        profilePhotoName: true,
         adminDocRequests: {
           select: { id: true, name: true, createdAt: true },
           orderBy: { createdAt: 'asc' },
@@ -75,7 +102,11 @@ export async function getEmployeeById(id, requestingUser) {
     });
   }
 
-  return { ...employee, applicationProfile };
+  const signedEmployee = await attachSignedEmployeePhoto(employee);
+  const signedAppPhoto = applicationProfile
+    ? { ...applicationProfile, profilePhotoUrl: await signIfStoragePath(applicationProfile.profilePhotoUrl || null) }
+    : applicationProfile;
+  return { ...signedEmployee, applicationProfile: signedAppPhoto };
 }
 
 const EMPLOYMENT_FLAT_KEYS = [
