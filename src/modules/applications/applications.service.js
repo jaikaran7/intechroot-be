@@ -96,6 +96,13 @@ async function loadApplicationBundle(id) {
   });
 }
 
+function parseReferenceIdSuffix(referenceId) {
+  const m = /^ITR-(\d+)$/.exec(String(referenceId || "").trim());
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? n : null;
+}
+
 export async function serializeApplication(application) {
   if (!application) return null;
 
@@ -328,8 +335,14 @@ export async function createApplication(data, file = null) {
         if (existing) throw new ConflictError('You have already applied for this position');
       }
 
-      const { _count } = await tx.application.aggregate({ _count: { _all: true } });
-      const referenceId = generateReferenceId(_count._all + 1);
+      // IMPORTANT: do not use count() for referenceId — deletions create gaps and can cause collisions.
+      // referenceId is zero-padded, so lexicographic order matches numeric order.
+      const last = await tx.application.findFirst({
+        select: { referenceId: true },
+        orderBy: { referenceId: 'desc' },
+      });
+      const lastNum = parseReferenceIdSuffix(last?.referenceId) ?? 0;
+      const referenceId = generateReferenceId(lastNum + 1);
 
       return tx.application.create({
         data: {
