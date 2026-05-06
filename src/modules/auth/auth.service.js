@@ -251,6 +251,14 @@ export async function forgotPassword({ email, role }) {
   });
 
   const link = resetLinkForRole(rawToken, targetRole);
+  // In local/dev environments we often don't have email credentials configured.
+  // Provide a safe debug link only when RESEND is not configured and we're not in production,
+  // so QA/dev can still complete the reset flow end-to-end.
+  if (process.env.NODE_ENV !== 'production' && !process.env.RESEND_API_KEY) {
+    console.warn('[auth] RESEND_API_KEY not set — returning debug reset link');
+    return { sent: true, debugResetLink: link };
+  }
+
   await sendEmail({
     to: user.email,
     ...resetYourPasswordEmail({
