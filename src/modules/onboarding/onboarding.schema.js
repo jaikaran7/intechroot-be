@@ -44,6 +44,7 @@ export const adminBgvSchema = z.object({
       { message: 'BGV link must be a valid URL' },
     ),
   bgvNote: z.string().optional(),
+  bgvVerified: z.boolean().optional(),
 });
 
 export const adminDocApproveSchema = z.object({

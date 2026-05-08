@@ -64,7 +64,7 @@ export async function downloadDocument(req, res, next) {
 export async function verifyDocument(req, res, next) {
   try {
     const { verification } = req.body;
-    const doc = await DocumentsService.verifyDocument(req.params.id, verification);
+    const doc = await DocumentsService.verifyDocument(req.params.id, verification, req.user);
     res.json({ success: true, data: doc });
   } catch (err) { next(err); }
 }
@@ -88,7 +88,7 @@ export async function getDocumentsByOwner(req, res, next) {
     if (req.user?.role === 'employee' && ownerType === 'employee' && req.user.employeeId !== ownerId) {
       return next(new ForbiddenError());
     }
-    const docs = await DocumentsService.getDocumentsByOwner(ownerId, ownerType);
+    const docs = await DocumentsService.getDocumentsByOwner(ownerId, ownerType, req.user);
     res.json({ success: true, data: docs });
   } catch (err) { next(err); }
 }

@@ -13,27 +13,27 @@ import timesheetRoutes from '../timesheets/timesheets.routes.js';
 
 const router = Router();
 
-router.get('/', authenticate, requireRole('admin', 'super_admin'), EmployeesController.getEmployees);
-router.get('/:id', authenticate, requireRole('admin', 'super_admin', 'employee'), EmployeesController.getEmployeeById);
+router.get('/', authenticate, requireRole('admin', 'super_admin', 'hr_admin'), EmployeesController.getEmployees);
+router.get('/:id', authenticate, requireRole('admin', 'super_admin', 'hr_admin', 'employee'), EmployeesController.getEmployeeById);
 router.post(
   '/:id/extra-document-requests',
   authenticate,
-  requireRole('admin', 'super_admin', 'employee'),
+  requireRole('admin', 'super_admin', 'hr_admin', 'employee'),
   validateBody(extraDocumentRequestSchema),
   EmployeesController.addExtraDocumentRequest,
 );
 router.put(
   '/:id',
   authenticate,
-  requireRole('admin', 'super_admin', 'employee'),
+  requireRole('admin', 'super_admin', 'hr_admin', 'employee'),
   validateBody(updateEmployeeSchema),
   EmployeesController.updateEmployee,
 );
-router.patch('/:id/status', authenticate, requireRole('admin', 'super_admin'), validateBody(employeeStatusSchema), EmployeesController.updateEmployeeStatus);
+router.patch('/:id/status', authenticate, requireRole('admin', 'super_admin', 'hr_admin'), validateBody(employeeStatusSchema), EmployeesController.updateEmployeeStatus);
 router.post(
   '/:id/dashboard-message',
   authenticate,
-  requireRole('admin', 'super_admin'),
+  requireRole('admin', 'super_admin', 'hr_admin'),
   validateBody(employeeDashboardMessageSchema),
   EmployeesController.postDashboardMessage,
 );

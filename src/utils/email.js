@@ -506,3 +506,67 @@ export function applicationRejectedEmail({ fullName, jobTitle, companyName, care
     }),
   };
 }
+
+/** Calendar range label for timesheet notification emails (uses period when set). */
+export function formatTimesheetWeekRangeLabel(timesheet) {
+  if (!timesheet) return '';
+  const fmt = (value) => {
+    if (value == null || value === '') return '';
+    const d = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(d.getTime())) return '';
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  };
+  if (timesheet.periodStart != null && timesheet.periodEnd != null) {
+    const a = fmt(timesheet.periodStart);
+    const b = fmt(timesheet.periodEnd);
+    if (a && b) return `${a} – ${b}`;
+  }
+  return fmt(timesheet.weekStart) || '';
+}
+
+/** Employee notification when an admin rejects a submitted timesheet. */
+export function timesheetRejectedEmail({ employeeName, weekRangeLabel, rejectionReason }) {
+  const safeCompany = escapeHtml(COMPANY_NAME);
+  const firstName = String(employeeName || '').trim().split(/\s+/)[0] || 'there';
+  const safeName = escapeHtml(firstName);
+  const safeWeek = escapeHtml(String(weekRangeLabel || '').trim() || 'the submitted period');
+  const reason = String(rejectionReason || '').trim();
+  const reasonBlock = reason
+    ? `<div style="margin:20px 0;padding:14px 16px;background:#fef2f2;border:1px solid #fecaca;border-radius:10px">
+         <div style="font-size:11px;font-weight:800;color:#991b1b;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.08em">Administrator note</div>
+         <div style="color:#111827;white-space:pre-wrap;font-size:14px;line-height:1.5">${escapeHtml(reason)}</div>
+       </div>`
+    : '';
+  const portalUrl = `${getBaseUrl()}/login`;
+  return {
+    subject: `Timesheet rejected — please update and resubmit | ${safeCompany}`,
+    html: layout({
+      preheader: 'Your timesheet needs corrections before it can be approved.',
+      title: 'Timesheet rejected',
+      bodyHtml: `
+        <p>Hi ${safeName},</p>
+        <p>Your timesheet for <strong>${safeWeek}</strong> has been rejected. Please read the note below, correct your submission, and send it again for approval.</p>
+        ${reasonBlock}
+        ${button(portalUrl, 'Open portal')}
+        <p style="margin-top:20px;color:#6b7280;font-size:13px">If anything is unclear, contact your manager or HR.</p>
+        <p style="margin-top:14px">— ${safeCompany}</p>
+      `,
+    }),
+  };
+}
+
+/** Fire-and-forget: logs if RESEND_API_KEY is missing; does not throw. */
+export async function notifyEmployeeTimesheetRejected(employeeEmail, employeeName, timesheetRow, rejectionNote) {
+  const to = String(employeeEmail || '').trim().toLowerCase();
+  if (!to) {
+    console.warn('[email] Timesheet rejection: no employee email — skipping notification');
+    return;
+  }
+  const weekRangeLabel = formatTimesheetWeekRangeLabel(timesheetRow);
+  const { subject, html } = timesheetRejectedEmail({
+    employeeName,
+    weekRangeLabel,
+    rejectionReason: rejectionNote,
+  });
+  await sendEmail({ to, subject, html });
+}

@@ -16,6 +16,7 @@ export const ROLES = {
   SUPER_ADMIN: 'super_admin',
   ADMIN: 'admin',
   ADMIN_PANEL: 'ADMIN',
+  HR_ADMIN: 'hr_admin',
   EMPLOYEE: 'employee',
   APPLICANT: 'applicant',
 };

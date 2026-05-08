@@ -72,6 +72,37 @@ export async function setAdminAssignments(req, res, next) {
   }
 }
 
+export async function getAdminApplicantAssignments(req, res, next) {
+  try {
+    const data = await AdminPanelService.getAdminApplicantAssignments(req.params.id, req.user);
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function setAdminApplicantAssignments(req, res, next) {
+  try {
+    const data = await AdminPanelService.setAdminApplicantAssignments(req.params.id, req.body.applicationIds, req.user);
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function removeAdminApplicantAssignment(req, res, next) {
+  try {
+    const data = await AdminPanelService.removeAdminApplicantAssignment(
+      req.params.id,
+      req.params.applicationId,
+      req.user,
+    );
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getDashboard(req, res, next) {
   try {
     const data = await AdminPanelService.getDashboard(req.user);

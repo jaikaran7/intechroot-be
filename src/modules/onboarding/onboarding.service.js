@@ -2,6 +2,15 @@ import prisma from '../../config/db.js';
 import { NotFoundError, AppError, ForbiddenError } from '../../utils/errors.js';
 import { getSignedUrl } from '../../config/supabase.js';
 import { sendEmail, onboardingMissingDetailsEmail, getBaseUrl } from '../../utils/email.js';
+import { assertHrAdminPanelPermission, assertHrAdminPanelPermissionAny } from '../../utils/panelPermissions.js';
+
+function currentYear2() {
+  return String(new Date().getFullYear()).slice(-2);
+}
+
+function formatOnboardingApplicationId(year2, sequenceNumber) {
+  return `APP-INTR-${year2}-${String(sequenceNumber).padStart(4, '0')}`;
+}
 
 async function signIfStoragePath(value) {
   if (!value || typeof value !== 'string') return value || null;
@@ -29,6 +38,17 @@ function applicantOnboardingLink(applicationId, step = 1) {
   const base = getBaseUrl();
   // Applicant routes are protected; sending the onboarding route is fine — user logs in if needed.
   return `${base.replace(/\/$/, '')}/applicant/onboarding/${step}?applicationId=${encodeURIComponent(applicationId)}`;
+}
+
+async function assertHrAdminApplicationAccess(requestingUser, applicationId) {
+  if (requestingUser?.role !== 'hr_admin') return;
+  const row = await prisma.applicantAssignment.findFirst({
+    where: { adminUserId: requestingUser.userId, applicationId, isActive: true },
+    select: { id: true },
+  });
+  if (!row) {
+    throw new ForbiddenError('Application is not assigned to this HR admin');
+  }
 }
 
 async function computeOnboardingMissingFields(applicationId) {
@@ -92,6 +112,7 @@ async function getOnboarding(applicationId) {
       application: {
         select: {
           id: true,
+          onboardingApplicationId: true,
           name: true,
           email: true,
           phone: true,
@@ -114,6 +135,7 @@ export async function getOnboardingState(applicationId, requestingUser) {
   if (requestingUser?.role === 'applicant' && requestingUser.applicationId !== applicationId) {
     throw new ForbiddenError();
   }
+  await assertHrAdminApplicationAccess(requestingUser, applicationId);
   const onboarding = await getOnboarding(applicationId);
   // Attach the list of required document keys + admin-requested documents so clients can render
   // consistent progress checks without re-querying.
@@ -191,6 +213,10 @@ export async function submitProfileStep(applicationId, data, requestingUser) {
 export async function patchApplicantProfile(applicationId, data, requestingUser) {
   if (requestingUser?.role === 'applicant' && requestingUser.applicationId !== applicationId) {
     throw new ForbiddenError();
+  }
+  if (requestingUser && requestingUser.role !== 'applicant') {
+    await assertHrAdminPanelPermission(requestingUser, 'manageOnboardingProcess');
+    await assertHrAdminApplicationAccess(requestingUser, applicationId);
   }
   const onboarding = await getOnboarding(applicationId);
   if (!onboarding.enabled) throw new AppError('Onboarding has not been enabled for this applicant', 400);
@@ -301,19 +327,49 @@ export async function finalSubmit(applicationId, requestingUser) {
   if (!onboarding.documentsCompleted) throw new AppError('Documents step must be completed first', 400);
   if (!onboarding.bgvApplicantAcknowledged) throw new AppError('Verification must be acknowledged first', 400);
 
-  await prisma.application.update({
-    where: { id: applicationId },
-    data: { status: 'Pending Admin Approval' },
+  await prisma.$transaction(async (tx) => {
+    const existingApplication = await tx.application.findUnique({
+      where: { id: applicationId },
+      select: { onboardingApplicationId: true },
+    });
+    if (!existingApplication) throw new NotFoundError('Application not found');
+
+    let onboardingApplicationId = existingApplication.onboardingApplicationId;
+    if (!onboardingApplicationId) {
+      const yy = currentYear2();
+      const year = Number(yy);
+
+      const nextSequence = await tx.onboardingApplicationSequence.upsert({
+        where: { year },
+        update: { currentValue: { increment: 1 } },
+        create: { year, currentValue: 1 },
+        select: { currentValue: true },
+      });
+
+      onboardingApplicationId = formatOnboardingApplicationId(yy, nextSequence.currentValue);
+    }
+
+    await tx.application.update({
+      where: { id: applicationId },
+      data: {
+        status: 'Pending Admin Approval',
+        onboardingApplicationId,
+      },
+    });
+
+    await tx.onboardingState.update({
+      where: { applicationId },
+      data: { finalSubmitted: true, step: 5 },
+    });
   });
 
-  return prisma.onboardingState.update({
-    where: { applicationId },
-    data: { finalSubmitted: true, step: 5 },
-  });
+  return getOnboarding(applicationId);
 }
 
 // Admin actions
-export async function adminEnableOnboarding(applicationId) {
+export async function adminEnableOnboarding(applicationId, requestingUser) {
+  await assertHrAdminPanelPermission(requestingUser, 'manageOnboardingProcess');
+  await assertHrAdminApplicationAccess(requestingUser, applicationId);
   const application = await prisma.application.findUnique({
     where: { id: applicationId },
     include: { onboarding: true },
@@ -347,7 +403,9 @@ export async function adminEnableOnboarding(applicationId) {
   return onboarding;
 }
 
-export async function adminRequestDocument(applicationId, name) {
+export async function adminRequestDocument(applicationId, name, requestingUser) {
+  await assertHrAdminPanelPermissionAny(requestingUser, ['requestAdditionalDocuments', 'manageOnboardingProcess']);
+  await assertHrAdminApplicationAccess(requestingUser, applicationId);
   const trimmed = String(name || '').trim();
   if (!trimmed) throw new AppError('Document name is required', 400);
 
@@ -384,7 +442,9 @@ export async function adminRequestDocument(applicationId, name) {
   });
 }
 
-export async function adminDeleteDocumentRequest(applicationId, requestId) {
+export async function adminDeleteDocumentRequest(applicationId, requestId, requestingUser) {
+  await assertHrAdminPanelPermissionAny(requestingUser, ['requestAdditionalDocuments', 'manageOnboardingProcess']);
+  await assertHrAdminApplicationAccess(requestingUser, applicationId);
   const existing = await prisma.adminDocumentRequest.findUnique({ where: { id: requestId } });
   if (!existing || existing.applicationId !== applicationId) {
     throw new NotFoundError('Document request not found');
@@ -398,7 +458,9 @@ export async function adminDeleteDocumentRequest(applicationId, requestId) {
 }
 
 /** Marks admin profile review complete so the admin UI advances to document approval. */
-export async function adminApproveProfile(applicationId) {
+export async function adminApproveProfile(applicationId, requestingUser) {
+  await assertHrAdminPanelPermissionAny(requestingUser, ['approveApplicantProfile', 'manageOnboardingProcess']);
+  await assertHrAdminApplicationAccess(requestingUser, applicationId);
   const onboarding = await getOnboarding(applicationId);
   if (!onboarding.enabled) throw new AppError('Onboarding is not enabled for this application', 400);
   if (!onboarding.profileCompleted) {
@@ -411,7 +473,9 @@ export async function adminApproveProfile(applicationId) {
   });
 }
 
-export async function adminApproveDocuments(applicationId) {
+export async function adminApproveDocuments(applicationId, requestingUser) {
+  await assertHrAdminPanelPermission(requestingUser, 'manageOnboardingProcess');
+  await assertHrAdminApplicationAccess(requestingUser, applicationId);
   const onboarding = await getOnboarding(applicationId);
   if (!onboarding.documentsCompleted) throw new AppError('Applicant has not completed the documents step yet', 400);
 
@@ -421,13 +485,29 @@ export async function adminApproveDocuments(applicationId) {
   });
 }
 
-export async function adminSetBgv(applicationId, { bgvLink, bgvNote }) {
+export async function adminSetBgv(applicationId, body, requestingUser) {
+  const { bgvLink, bgvNote, bgvVerified } = body || {};
+  if (requestingUser?.role === 'hr_admin') {
+    await assertHrAdminApplicationAccess(requestingUser, applicationId);
+    const touchesLinkNote = bgvLink !== undefined || bgvNote !== undefined;
+    const touchesVerified = bgvVerified !== undefined;
+    if (touchesLinkNote) {
+      await assertHrAdminPanelPermissionAny(requestingUser, ['setBGVDetails', 'manageOnboardingProcess']);
+    }
+    if (touchesVerified) {
+      await assertHrAdminPanelPermissionAny(requestingUser, ['approveBGVVerification', 'manageOnboardingProcess']);
+    }
+    if (!touchesLinkNote && !touchesVerified) {
+      await assertHrAdminPanelPermission(requestingUser, 'manageOnboardingProcess');
+    }
+  }
   await getOnboarding(applicationId);
   return prisma.onboardingState.update({
     where: { applicationId },
     data: {
       ...(bgvLink !== undefined && { bgvLink: bgvLink || null }),
       ...(bgvNote !== undefined && { bgvNote: bgvNote || null }),
+      ...(bgvVerified !== undefined && { bgvVerified: Boolean(bgvVerified) }),
       bgvCompleted: true,
     },
   });

@@ -1,6 +1,7 @@
 import prisma from '../../config/db.js';
 import { NotFoundError, AppError, ForbiddenError } from '../../utils/errors.js';
 import { getPagination, paginatedResponse } from '../../utils/pagination.js';
+import { notifyEmployeeTimesheetRejected } from '../../utils/email.js';
 
 function hourVal(v) {
   if (v === null || v === undefined || v === '') return 0;
@@ -175,8 +176,18 @@ export async function approveTimesheet(id) {
 }
 
 export async function rejectTimesheet(id, rejectionNote) {
-  const ts = await prisma.timesheet.findUnique({ where: { id } });
+  const ts = await prisma.timesheet.findUnique({
+    where: { id },
+    include: { employee: { select: { email: true, name: true } } },
+  });
   if (!ts) throw new NotFoundError('Timesheet not found');
 
-  return prisma.timesheet.update({ where: { id }, data: { status: 'Rejected', rejectionNote } });
+  const updated = await prisma.timesheet.update({
+    where: { id },
+    data: { status: 'Rejected', rejectionNote },
+  });
+
+  await notifyEmployeeTimesheetRejected(ts.employee?.email, ts.employee?.name, ts, rejectionNote);
+
+  return updated;
 }

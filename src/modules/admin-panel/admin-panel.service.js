@@ -2,9 +2,23 @@ import bcrypt from 'bcryptjs';
 import prisma from '../../config/db.js';
 import { AppError, ConflictError, ForbiddenError, NotFoundError } from '../../utils/errors.js';
 import { getPagination, paginatedResponse } from '../../utils/pagination.js';
+import { notifyEmployeeTimesheetRejected } from '../../utils/email.js';
+import {
+  normalizePermissionsForUserRole,
+  getNormalizedPermissionsForAdminUser,
+} from '../../utils/panelPermissions.js';
+
+export const ENTERPRISE_STAFF_ROLES = ['ADMIN', 'hr_admin'];
+const APPLICATION_STAGE_ORDER = [
+  'Application Submitted',
+  'Profile Screening',
+  'Technical Evaluation',
+  'Client Interview',
+  'Offer & Onboarding',
+];
 
 function requireAdminPanelUser(requestingUser) {
-  if (requestingUser?.role !== 'ADMIN') {
+  if (!requestingUser || !ENTERPRISE_STAFF_ROLES.includes(requestingUser.role)) {
     throw new ForbiddenError(`Role '${requestingUser?.role || 'unknown'}' is not authorized for this action`);
   }
   return requestingUser.userId;
@@ -22,13 +36,17 @@ function normalizeStatus(status, fallback = 'Active') {
 
 function serializeAdmin(user, profile = null, assignedCount = 0) {
   const status = profile?.status || (user.isActive ? 'Active' : 'Inactive');
+  const adminKind = user.role === 'hr_admin' ? 'hr' : 'client';
+  const roleLabel = user.role === 'hr_admin' ? 'HR Admin' : 'Client Admin';
   return {
     id: user.id,
     name: user.name,
     email: user.email,
     company: profile?.company || '',
+    phone: profile?.phone ?? '',
+    adminKind,
     status,
-    role: 'Enterprise Admin',
+    role: roleLabel,
     employees: assignedCount,
     employeesManaged: assignedCount,
     joined: `Joined ${new Date(user.createdAt).toLocaleDateString('en-US', {
@@ -36,18 +54,9 @@ function serializeAdmin(user, profile = null, assignedCount = 0) {
       month: 'short',
       year: 'numeric',
     })}`,
-    permissions: profile?.permissions || {},
+    permissions: normalizePermissionsForUserRole(user.role, profile?.permissions || {}),
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
-  };
-}
-
-function normalizePermissions(permissions = {}) {
-  const value = permissions && typeof permissions === 'object' ? permissions : {};
-  return {
-    approveTimesheets: Boolean(value.approveTimesheets),
-    rejectTimesheets: Boolean(value.rejectTimesheets),
-    editTimesheets: false,
   };
 }
 
@@ -59,13 +68,43 @@ async function getAssignedEmployeeIds(adminUserId) {
   return assignments.map((assignment) => assignment.employeeId);
 }
 
+async function getAssignedApplicationIds(adminUserId) {
+  const assignments = await prisma.applicantAssignment.findMany({
+    where: { adminUserId, isActive: true },
+    select: { applicationId: true },
+  });
+  return assignments.map((assignment) => assignment.applicationId);
+}
+
+function resolveDisplayStage(application) {
+  if (!application) return '';
+  if (application.lifecycleStage === 'employee' || application.status === 'Employee') return 'Employee';
+  const idx = Number(application.currentStageIndex);
+  if (Number.isFinite(idx) && idx >= 0 && idx < APPLICATION_STAGE_ORDER.length) {
+    return APPLICATION_STAGE_ORDER[idx];
+  }
+  return application.status || '';
+}
+
+function serializeAssignedApplicantRow(application) {
+  return {
+    id: application.id,
+    name: application.name,
+    email: application.email,
+    status: application.status,
+    stage: resolveDisplayStage(application),
+    lifecycleStage: application.lifecycleStage,
+    currentStageIndex: application.currentStageIndex,
+  };
+}
+
 async function getAdminPermissions(adminUserId) {
-  const profile = await prisma.adminProfile.findUnique({ where: { adminUserId } });
-  return normalizePermissions(profile?.permissions);
+  return getNormalizedPermissionsForAdminUser(adminUserId);
 }
 
 async function getAdminActivitySummary(adminUserId) {
   const assignedEmployeeIds = await getAssignedEmployeeIds(adminUserId);
+  const assignedApplicationIds = await getAssignedApplicationIds(adminUserId);
   const where = assignedEmployeeIds.length ? { employeeId: { in: assignedEmployeeIds } } : { id: { in: [] } };
   const [approvalsDone, rejections, pending] = await Promise.all([
     prisma.timesheet.count({ where: { ...where, status: 'Approved' } }),
@@ -94,11 +133,17 @@ async function getAdminActivitySummary(adminUserId) {
     });
   }
 
-  return { approvalsDone, rejections, pending, pulse: dayBuckets };
+  return {
+    approvalsDone,
+    rejections,
+    pending,
+    applicantsManaged: assignedApplicationIds.length,
+    pulse: dayBuckets,
+  };
 }
 
 async function getAdminOrThrow(id) {
-  const admin = await prisma.user.findFirst({ where: { id, role: 'ADMIN' } });
+  const admin = await prisma.user.findFirst({ where: { id, role: { in: ENTERPRISE_STAFF_ROLES } } });
   if (!admin) throw new NotFoundError('Admin not found');
   return admin;
 }
@@ -147,9 +192,15 @@ export async function listAdmins(query, requestingUser) {
   const { page, limit, skip } = getPagination(query);
   const status = query.status && query.status !== 'All' ? normalizeStatus(query.status) : null;
   const search = String(query.search || '').trim();
+  const kind = String(query.kind || 'all').toLowerCase();
+
+  let roleClause;
+  if (kind === 'client') roleClause = { role: 'ADMIN' };
+  else if (kind === 'hr') roleClause = { role: 'hr_admin' };
+  else roleClause = { role: { in: ENTERPRISE_STAFF_ROLES } };
 
   const userWhere = {
-    role: 'ADMIN',
+    ...roleClause,
     ...(status ? { isActive: status === 'Active' } : {}),
     ...(search
       ? {
@@ -175,7 +226,11 @@ export async function getAdmin(id, requestingUser) {
   const admin = await getAdminOrThrow(id);
   const [summary] = await getAdminSummaries([admin]);
   const activity = await getAdminActivitySummary(id);
-  return { ...summary, permissions: normalizePermissions(summary.permissions), activity };
+  return {
+    ...summary,
+    permissions: normalizePermissionsForUserRole(admin.role, summary.permissions || {}),
+    activity,
+  };
 }
 
 export async function createAdmin(data, requestingUser) {
@@ -187,10 +242,24 @@ export async function createAdmin(data, requestingUser) {
     throw new AppError('Name, email, and password are required', 400);
   }
 
+  const adminKind = String(data.adminKind || 'client').toLowerCase();
+  const isHr = adminKind === 'hr';
+  const targetRole = isHr ? 'hr_admin' : 'ADMIN';
+
+  if (!isHr && !String(data.company || '').trim()) {
+    throw new AppError('Company is required for client admins', 400);
+  }
+  if (isHr && !String(data.phone || '').trim()) {
+    throw new AppError('Phone is required for HR admins', 400);
+  }
+
+  const phone = String(data.phone || '').trim();
+  const company = String(data.company || '').trim();
+
   const status = normalizeStatus(data.status);
   const passwordHash = await bcrypt.hash(password, 12);
   const existing = await prisma.user.findUnique({ where: { email } });
-  if (existing && existing.role !== 'ADMIN') {
+  if (existing && !ENTERPRISE_STAFF_ROLES.includes(existing.role)) {
     throw new ConflictError('An account with this email already exists');
   }
 
@@ -201,6 +270,7 @@ export async function createAdmin(data, requestingUser) {
           passwordHash,
           name,
           isActive: status === 'Active',
+          role: targetRole,
         },
       })
     : await prisma.user.create({
@@ -208,7 +278,7 @@ export async function createAdmin(data, requestingUser) {
           email,
           passwordHash,
           name,
-          role: 'ADMIN',
+          role: targetRole,
           isActive: status === 'Active',
         },
       });
@@ -216,15 +286,17 @@ export async function createAdmin(data, requestingUser) {
   const profile = await prisma.adminProfile.upsert({
     where: { adminUserId: admin.id },
     update: {
-      company: String(data.company || '').trim(),
+      company: isHr ? '' : company,
+      phone,
       status,
-      permissions: normalizePermissions(data.permissions),
+      permissions: normalizePermissionsForUserRole(targetRole === 'hr_admin' ? 'hr_admin' : 'ADMIN', data.permissions),
     },
     create: {
       adminUserId: admin.id,
-      company: String(data.company || '').trim(),
+      company: isHr ? '' : company,
+      phone: phone || '',
       status,
-      permissions: normalizePermissions(data.permissions),
+      permissions: normalizePermissionsForUserRole(targetRole === 'hr_admin' ? 'hr_admin' : 'ADMIN', data.permissions),
     },
   });
 
@@ -233,7 +305,7 @@ export async function createAdmin(data, requestingUser) {
 
 export async function updateAdmin(id, data, requestingUser) {
   requireSuperAdmin(requestingUser);
-  await getAdminOrThrow(id);
+  const targetUser = await getAdminOrThrow(id);
 
   const userData = {};
   if (data.name !== undefined) userData.name = String(data.name || '').trim();
@@ -250,20 +322,31 @@ export async function updateAdmin(id, data, requestingUser) {
     where: { adminUserId: id },
     update: {
       ...(data.company !== undefined ? { company: String(data.company || '').trim() } : {}),
+      ...(data.phone !== undefined ? { phone: String(data.phone || '').trim() } : {}),
       ...(data.status !== undefined ? { status: normalizeStatus(data.status) } : {}),
-      ...(data.permissions && typeof data.permissions === 'object' ? { permissions: normalizePermissions(data.permissions) } : {}),
+      ...(data.permissions && typeof data.permissions === 'object'
+        ? { permissions: normalizePermissionsForUserRole(targetUser.role, data.permissions) }
+        : {}),
     },
     create: {
       adminUserId: id,
       company: String(data.company || '').trim(),
+      phone: data.phone !== undefined ? String(data.phone || '').trim() : '',
       status: normalizeStatus(data.status, admin.isActive ? 'Active' : 'Inactive'),
-      permissions: normalizePermissions(data.permissions),
+      permissions: normalizePermissionsForUserRole(targetUser.role, data.permissions),
     },
   });
 
   const [summary] = await getAdminSummaries([admin]);
   const activity = await getAdminActivitySummary(id);
-  return { ...summary, company: profile.company, status: profile.status, permissions: normalizePermissions(profile.permissions), activity };
+  return {
+    ...summary,
+    company: profile.company,
+    phone: profile.phone ?? '',
+    status: profile.status,
+    permissions: normalizePermissionsForUserRole(admin.role, profile.permissions || {}),
+    activity,
+  };
 }
 
 export async function deleteAdmin(id, requestingUser) {
@@ -288,7 +371,7 @@ export async function listEmployees(query, requestingUser) {
   const search = String(query.search || '').trim();
   let where = {};
 
-  if (requestingUser?.role === 'ADMIN') {
+  if (requestingUser?.role === 'ADMIN' || requestingUser?.role === 'hr_admin') {
     const adminUserId = requireAdminPanelUser(requestingUser);
     const assignedEmployeeIds = await getAssignedEmployeeIds(adminUserId);
     console.log('[admin-panel] employees', { adminUserId, assignedEmployeeIds });
@@ -352,6 +435,87 @@ export async function setAdminAssignments(id, employeeIds, requestingUser) {
   return getAdminAssignments(id, requestingUser);
 }
 
+export async function getAdminApplicantAssignments(id, requestingUser) {
+  requireSuperAdmin(requestingUser);
+  await getAdminOrThrow(id);
+  const [activeAssignments, assignedApplicationIds] = await Promise.all([
+    prisma.applicantAssignment.findMany({
+      where: { isActive: true },
+      select: { adminUserId: true, applicationId: true },
+    }),
+    getAssignedApplicationIds(id),
+  ]);
+  const blockedApplicationIds = new Set(
+    activeAssignments
+      .filter((row) => row.adminUserId !== id)
+      .map((row) => row.applicationId),
+  );
+
+  const [applicants, availableApplicants] = await Promise.all([
+    assignedApplicationIds.length
+      ? prisma.application.findMany({
+          where: { id: { in: assignedApplicationIds } },
+          orderBy: { appliedDate: 'desc' },
+        })
+      : Promise.resolve([]),
+    prisma.application.findMany({
+      where: { id: { notIn: [...blockedApplicationIds] } },
+      orderBy: { appliedDate: 'desc' },
+      take: 1000,
+    }),
+  ]);
+  return {
+    applicationIds: assignedApplicationIds,
+    applicants: applicants.map(serializeAssignedApplicantRow),
+    availableApplicants: availableApplicants.map(serializeAssignedApplicantRow),
+  };
+}
+
+export async function setAdminApplicantAssignments(id, applicationIds, requestingUser) {
+  requireSuperAdmin(requestingUser);
+  const admin = await getAdminOrThrow(id);
+  if (admin.role !== 'hr_admin') {
+    throw new AppError('Applicants can only be assigned to HR admins', 400);
+  }
+  const uniqueApplicationIds = [...new Set((Array.isArray(applicationIds) ? applicationIds : []).map(String).filter(Boolean))];
+
+  await prisma.$transaction(async (tx) => {
+    await tx.applicantAssignment.updateMany({
+      where: { adminUserId: id, isActive: true },
+      data: { isActive: false },
+    });
+
+    for (const applicationId of uniqueApplicationIds) {
+      const application = await tx.application.findUnique({ where: { id: applicationId }, select: { id: true } });
+      if (!application) throw new NotFoundError(`Application not found: ${applicationId}`);
+      const assignedElsewhere = await tx.applicantAssignment.findFirst({
+        where: { applicationId, isActive: true, adminUserId: { not: id } },
+        select: { id: true },
+      });
+      if (assignedElsewhere) {
+        throw new ConflictError('One or more applicants are already assigned to another HR admin');
+      }
+      await tx.applicantAssignment.upsert({
+        where: { adminUserId_applicationId: { adminUserId: id, applicationId } },
+        update: { isActive: true, assignedAt: new Date() },
+        create: { adminUserId: id, applicationId, isActive: true },
+      });
+    }
+  });
+
+  return getAdminApplicantAssignments(id, requestingUser);
+}
+
+export async function removeAdminApplicantAssignment(id, applicationId, requestingUser) {
+  requireSuperAdmin(requestingUser);
+  await getAdminOrThrow(id);
+  await prisma.applicantAssignment.updateMany({
+    where: { adminUserId: id, applicationId: String(applicationId), isActive: true },
+    data: { isActive: false },
+  });
+  return getAdminApplicantAssignments(id, requestingUser);
+}
+
 export async function getDashboard(requestingUser) {
   const adminUserId = requireAdminPanelUser(requestingUser);
   const assignedEmployeeIds = await getAssignedEmployeeIds(adminUserId);
@@ -360,8 +524,13 @@ export async function getDashboard(requestingUser) {
     ? { employeeId: { in: assignedEmployeeIds }, status: { not: 'Draft' } }
     : { id: { in: [] } };
 
-  const [employees, pendingTimesheets, approvedTimesheets, rejectedTimesheets, totalTimesheets] =
+  const [adminUser, profile, employees, pendingTimesheets, approvedTimesheets, rejectedTimesheets, totalTimesheets] =
     await Promise.all([
+      prisma.user.findUnique({
+        where: { id: adminUserId },
+        select: { id: true, name: true, email: true, role: true, isActive: true },
+      }),
+      prisma.adminProfile.findUnique({ where: { adminUserId } }),
       prisma.employee.findMany({
         where: { id: assignedEmployeeIds.length ? { in: assignedEmployeeIds } : { in: [] } },
         orderBy: { name: 'asc' },
@@ -371,17 +540,24 @@ export async function getDashboard(requestingUser) {
       prisma.timesheet.count({ where: { ...timesheetWhere, status: 'Rejected' } }),
       prisma.timesheet.count({ where: timesheetWhere }),
     ]);
-  const profile = await prisma.adminProfile.findUnique({ where: { adminUserId } });
+  if (!adminUser) {
+    throw new NotFoundError('Admin not found');
+  }
 
   return {
     admin: {
       id: adminUserId,
+      name: adminUser.name,
+      email: adminUser.email,
+      role: adminUser.role,
+      isActive: adminUser.isActive,
       company: profile?.company || '',
+      phone: profile?.phone ?? '',
       status: profile?.status || 'Active',
     },
     assignedEmployees: employees.length,
     employees,
-    permissions: normalizePermissions(profile?.permissions),
+    permissions: normalizePermissionsForUserRole(adminUser.role, profile?.permissions || {}),
     timesheets: {
       total: totalTimesheets,
       pending: pendingTimesheets,
@@ -459,8 +635,17 @@ export async function rejectTimesheet(id, rejectionNote, requestingUser) {
     throw new AppError('Only pending timesheets can be rejected', 400);
   }
 
-  return prisma.timesheet.update({
+  const employee = await prisma.employee.findUnique({
+    where: { id: timesheet.employeeId },
+    select: { email: true, name: true },
+  });
+
+  const updated = await prisma.timesheet.update({
     where: { id },
     data: { status: 'Rejected', rejectionNote },
   });
+
+  await notifyEmployeeTimesheetRejected(employee?.email, employee?.name, timesheet, rejectionNote);
+
+  return updated;
 }

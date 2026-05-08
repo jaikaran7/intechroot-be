@@ -14,15 +14,23 @@ router.put('/admins/:id', authenticate, requireRole('super_admin'), AdminPanelCo
 router.delete('/admins/:id', authenticate, requireRole('super_admin'), AdminPanelController.deleteAdmin);
 router.get('/admins/:id/assignments', authenticate, requireRole('super_admin'), AdminPanelController.getAdminAssignments);
 router.put('/admins/:id/assignments', authenticate, requireRole('super_admin'), AdminPanelController.setAdminAssignments);
+router.get('/admins/:id/applicant-assignments', authenticate, requireRole('super_admin'), AdminPanelController.getAdminApplicantAssignments);
+router.put('/admins/:id/applicant-assignments', authenticate, requireRole('super_admin'), AdminPanelController.setAdminApplicantAssignments);
+router.delete(
+  '/admins/:id/applicant-assignments/:applicationId',
+  authenticate,
+  requireRole('super_admin'),
+  AdminPanelController.removeAdminApplicantAssignment,
+);
 
 router.get('/employees', authenticate, requireRole('ADMIN', 'super_admin'), AdminPanelController.listEmployees);
-router.get('/dashboard', authenticate, requireRole('ADMIN'), AdminPanelController.getDashboard);
-router.get('/timesheets', authenticate, requireRole('ADMIN'), AdminPanelController.getTimesheets);
-router.patch('/timesheets/:id/approve', authenticate, requireRole('ADMIN'), AdminPanelController.approveTimesheet);
+router.get('/dashboard', authenticate, requireRole('ADMIN', 'hr_admin'), AdminPanelController.getDashboard);
+router.get('/timesheets', authenticate, requireRole('ADMIN', 'hr_admin'), AdminPanelController.getTimesheets);
+router.patch('/timesheets/:id/approve', authenticate, requireRole('ADMIN', 'hr_admin'), AdminPanelController.approveTimesheet);
 router.patch(
   '/timesheets/:id/reject',
   authenticate,
-  requireRole('ADMIN'),
+  requireRole('ADMIN', 'hr_admin'),
   validateBody(rejectTimesheetSchema),
   AdminPanelController.rejectTimesheet,
 );

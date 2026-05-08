@@ -2,35 +2,35 @@ import * as JobsService from './jobs.service.js';
 
 export async function getJobs(req, res, next) {
   try {
-    const result = await JobsService.getJobs(req.query);
+    const result = await JobsService.getJobs(req.query, req.user || null);
     res.json({ success: true, ...result });
   } catch (err) { next(err); }
 }
 
 export async function getJobById(req, res, next) {
   try {
-    const job = await JobsService.getJobById(req.params.id);
+    const job = await JobsService.getJobById(req.params.id, req.user || null);
     res.json({ success: true, data: job });
   } catch (err) { next(err); }
 }
 
 export async function createJob(req, res, next) {
   try {
-    const job = await JobsService.createJob(req.body);
+    const job = await JobsService.createJob(req.body, req.user || null);
     res.status(201).json({ success: true, data: job });
   } catch (err) { next(err); }
 }
 
 export async function updateJob(req, res, next) {
   try {
-    const job = await JobsService.updateJob(req.params.id, req.body);
+    const job = await JobsService.updateJob(req.params.id, req.body, req.user || null);
     res.json({ success: true, data: job });
   } catch (err) { next(err); }
 }
 
 export async function updateJobStatus(req, res, next) {
   try {
-    const job = await JobsService.updateJobStatus(req.params.id, req.body.status);
+    const job = await JobsService.updateJobStatus(req.params.id, req.body.status, req.user || null);
     res.json({ success: true, data: job });
   } catch (err) { next(err); }
 }

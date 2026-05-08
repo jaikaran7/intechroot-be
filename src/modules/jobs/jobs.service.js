@@ -1,8 +1,12 @@
 import prisma from '../../config/db.js';
 import { AppError, NotFoundError } from '../../utils/errors.js';
 import { getPagination, paginatedResponse } from '../../utils/pagination.js';
+import { assertHrAdminPanelPermission } from '../../utils/panelPermissions.js';
 
-export async function getJobs(query) {
+export async function getJobs(query, requestingUser = null) {
+  if (requestingUser?.role === 'hr_admin') {
+    await assertHrAdminPanelPermission(requestingUser, 'viewJobPostings');
+  }
   const { page, limit, skip } = getPagination(query);
   const where = {};
 
@@ -19,24 +23,36 @@ export async function getJobs(query) {
   return paginatedResponse(jobs, total, page, limit);
 }
 
-export async function getJobById(id) {
+export async function getJobById(id, requestingUser = null) {
+  if (requestingUser?.role === 'hr_admin') {
+    await assertHrAdminPanelPermission(requestingUser, 'viewJobPostings');
+  }
   const job = await prisma.job.findUnique({ where: { id } });
   if (!job) throw new NotFoundError('Job not found');
   return job;
 }
 
-export async function createJob(data) {
+export async function createJob(data, requestingUser = null) {
+  if (requestingUser?.role === 'hr_admin') {
+    await assertHrAdminPanelPermission(requestingUser, 'createEditJobPostings');
+  }
   const maxOrder = await prisma.job.aggregate({ _max: { displayOrder: true } });
   const nextOrder = (maxOrder._max.displayOrder ?? -1) + 1;
   return prisma.job.create({ data: { ...data, displayOrder: nextOrder } });
 }
 
-export async function updateJob(id, data) {
+export async function updateJob(id, data, requestingUser = null) {
+  if (requestingUser?.role === 'hr_admin') {
+    await assertHrAdminPanelPermission(requestingUser, 'createEditJobPostings');
+  }
   await getJobById(id);
   return prisma.job.update({ where: { id }, data });
 }
 
-export async function updateJobStatus(id, status) {
+export async function updateJobStatus(id, status, requestingUser = null) {
+  if (requestingUser?.role === 'hr_admin') {
+    await assertHrAdminPanelPermission(requestingUser, 'openCloseJobPostings');
+  }
   await getJobById(id);
   return prisma.job.update({ where: { id }, data: { status } });
 }

@@ -1,41 +1,68 @@
 import prisma from '../../config/db.js';
 import { getPagination, paginatedResponse } from '../../utils/pagination.js';
+import { internalPoolEmployeeWhere } from '../../utils/internalPool.js';
 
-export async function getDashboardStats() {
-  const [
-    totalApplications,
-    byStage,
-    byDepartment,
-    totalEmployees,
-    pendingTimesheets,
-    recentApplications,
-  ] = await Promise.all([
-    prisma.application.count(),
-    prisma.application.groupBy({
-      by: ['lifecycleStage'],
-      _count: { _all: true },
-    }),
-    prisma.employee.groupBy({
-      by: ['department'],
-      _count: { _all: true },
-    }),
-    prisma.employee.count({ where: { status: 'Active' } }),
-    prisma.timesheet.count({ where: { status: 'Pending' } }),
-    prisma.application.findMany({
-      take: 5,
-      orderBy: { appliedDate: 'desc' },
-      select: {
-        id: true,
-        referenceId: true,
-        name: true,
-        role: true,
-        location: true,
-        lifecycleStage: true,
-        status: true,
-        appliedDate: true,
-      },
-    }),
-  ]);
+export async function getDashboardStats(requestingUser = null) {
+  const isHrAdmin = requestingUser?.role === 'hr_admin';
+  let assignedEmployeeIds = null;
+  let assignedApplicationIds = null;
+  if (isHrAdmin) {
+    const [employeeRows, applicationRows] = await Promise.all([
+      prisma.employeeAssignment.findMany({
+        where: { adminUserId: requestingUser.userId, isActive: true },
+        select: { employeeId: true },
+      }),
+      prisma.applicantAssignment.findMany({
+        where: { adminUserId: requestingUser.userId, isActive: true },
+        select: { applicationId: true },
+      }),
+    ]);
+    assignedEmployeeIds = employeeRows.map((r) => r.employeeId);
+    assignedApplicationIds = applicationRows.map((r) => r.applicationId);
+  }
+
+  const hrEmployeeWhere = { ...internalPoolEmployeeWhere(), status: 'Active' };
+  const hrApplicationWhere = assignedApplicationIds?.length ? { id: { in: assignedApplicationIds } } : { id: { in: [] } };
+
+  const [totalApplications, byStage, byDepartment, totalEmployees, pendingTimesheets, recentApplications] =
+    await Promise.all([
+      prisma.application.count({ ...(isHrAdmin ? { where: hrApplicationWhere } : {}) }),
+      prisma.application.groupBy({
+        by: ['lifecycleStage'],
+        ...(isHrAdmin ? { where: hrApplicationWhere } : {}),
+        _count: { _all: true },
+      }),
+      prisma.employee.groupBy({
+        by: ['department'],
+        _count: { _all: true },
+        ...(isHrAdmin ? { where: hrEmployeeWhere } : {}),
+      }),
+      prisma.employee.count({
+        where: isHrAdmin ? hrEmployeeWhere : { status: 'Active' },
+      }),
+      isHrAdmin
+        ? assignedEmployeeIds?.length
+          ? prisma.timesheet.count({
+              where: { status: 'Pending', employeeId: { in: assignedEmployeeIds } },
+            })
+          : Promise.resolve(0)
+        : prisma.timesheet.count({ where: { status: 'Pending' } }),
+      prisma.application.findMany({
+        ...(isHrAdmin ? { where: hrApplicationWhere } : {}),
+        take: 5,
+        orderBy: { appliedDate: 'desc' },
+        select: {
+          id: true,
+          referenceId: true,
+          name: true,
+          role: true,
+          location: true,
+          lifecycleStage: true,
+          status: true,
+          appliedDate: true,
+        },
+      }),
+    ]);
 
   const stageMap = {};
   for (const entry of byStage) {

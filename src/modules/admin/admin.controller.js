@@ -2,7 +2,7 @@ import * as AdminService from './admin.service.js';
 
 export async function getDashboardStats(req, res, next) {
   try {
-    const stats = await AdminService.getDashboardStats();
+    const stats = await AdminService.getDashboardStats(req.user);
     res.json({ success: true, data: stats });
   } catch (err) { next(err); }
 }

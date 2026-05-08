@@ -10,7 +10,7 @@ router.get('/', authenticate, DocumentsController.getDocumentsByOwner);
 router.post('/upload', authenticate, documentUploadForRequest, DocumentsController.uploadDocument);
 router.post('/upsert', authenticate, documentUploadForRequest, DocumentsController.upsertDocument);
 router.get('/:id/download', authenticate, DocumentsController.downloadDocument);
-router.patch('/:id/verify', authenticate, requireRole('admin', 'super_admin'), DocumentsController.verifyDocument);
+router.patch('/:id/verify', authenticate, requireRole('admin', 'super_admin', 'hr_admin'), DocumentsController.verifyDocument);
 router.delete('/:id', authenticate, DocumentsController.deleteDocument);
 
 export default router;

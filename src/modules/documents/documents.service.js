@@ -1,6 +1,19 @@
 import prisma from '../../config/db.js';
 import { uploadToStorage, getSignedUrl, deleteFromStorage } from '../../config/supabase.js';
 import { NotFoundError, AppError, ForbiddenError } from '../../utils/errors.js';
+import {
+  assertHrAdminPanelPermission,
+  assertHrAdminPanelPermissionAny,
+  assertHrAdminEmployeeDocumentAccess,
+} from '../../utils/panelPermissions.js';
+async function assertHrAdminApplicationAccess(requestingUser, applicationId) {
+  if (requestingUser?.role !== 'hr_admin') return;
+  const row = await prisma.applicantAssignment.findFirst({
+    where: { adminUserId: requestingUser.userId, applicationId, isActive: true },
+    select: { id: true },
+  });
+  if (!row) throw new ForbiddenError('Application is not assigned to this HR admin');
+}
 
 function buildStoragePath(doc, file) {
   const prefix = doc.applicationId || doc.employeeId || 'general';
@@ -75,12 +88,21 @@ export async function getDownloadUrl(id, requestingUser = null) {
   if (!doc) throw new NotFoundError('Document not found');
   if (!doc.storagePath) throw new AppError('Document file not available', 404);
 
-  if (requestingUser && !['admin', 'super_admin'].includes(requestingUser.role)) {
+  if (requestingUser && !['admin', 'super_admin', 'hr_admin'].includes(requestingUser.role)) {
     if (requestingUser.role === 'applicant' && doc.applicationId && requestingUser.applicationId !== doc.applicationId) {
       throw new ForbiddenError();
     }
     if (requestingUser.role === 'employee' && doc.employeeId && requestingUser.employeeId !== doc.employeeId) {
       throw new ForbiddenError();
+    }
+  }
+
+  if (requestingUser?.role === 'hr_admin') {
+    if (doc.applicationId) {
+      await assertHrAdminPanelPermission(requestingUser, 'viewApplicationJourney');
+      await assertHrAdminApplicationAccess(requestingUser, doc.applicationId);
+    } else if (doc.employeeId) {
+      await assertHrAdminEmployeeDocumentAccess(requestingUser, doc.employeeId);
     }
   }
 
@@ -90,9 +112,20 @@ export async function getDownloadUrl(id, requestingUser = null) {
 
 const DOCUMENT_VERIFICATION_VALUES = ['unapproved', 'waiting', 'verified', 'rejected'];
 
-export async function verifyDocument(id, verification) {
+export async function verifyDocument(id, verification, requestingUser = null) {
   const doc = await prisma.document.findUnique({ where: { id } });
   if (!doc) throw new NotFoundError('Document not found');
+  if (requestingUser?.role === 'hr_admin') {
+    if (doc.applicationId) {
+      await assertHrAdminPanelPermissionAny(requestingUser, [
+        'verifyApplicantDocuments',
+        'acceptRejectApplicantDocuments',
+      ]);
+      await assertHrAdminApplicationAccess(requestingUser, doc.applicationId);
+    } else {
+      await assertHrAdminPanelPermission(requestingUser, 'editEmployeeDetails');
+    }
+  }
   if (!DOCUMENT_VERIFICATION_VALUES.includes(verification)) {
     throw new AppError('Invalid verification value', 400);
   }
@@ -122,7 +155,10 @@ export async function deleteDocument(id, requestingUser = null) {
 }
 
 // Returns all documents for a given owner (applicant or employee)
-export async function getDocumentsByOwner(ownerId, ownerType) {
+export async function getDocumentsByOwner(ownerId, ownerType, requestingUser = null) {
+  if (requestingUser?.role === 'hr_admin' && ownerType === 'employee') {
+    await assertHrAdminEmployeeDocumentAccess(requestingUser, ownerId);
+  }
   const where = ownerType === 'employee'
     ? { employeeId: ownerId }
     : { applicationId: ownerId };

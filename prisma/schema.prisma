@@ -14,6 +14,7 @@ enum UserRole {
   super_admin
   admin
   ADMIN
+  hr_admin
   employee
   applicant
 }
@@ -158,6 +159,7 @@ model Job {
 model Application {
   id               String         @id @default(uuid())
   referenceId      String         @unique
+  onboardingApplicationId String? @unique
   jobId            String?
   name             String
   email            String
@@ -197,6 +199,15 @@ model Application {
   timesheets       ApplicationTimesheet[]
 
   @@map("applications")
+}
+
+model OnboardingApplicationSequence {
+  year         Int      @id
+  currentValue Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("onboarding_application_sequences")
 }
 
 model ApplicationStage {
@@ -251,6 +262,7 @@ model OnboardingState {
   adminProfileApproved    Boolean @default(false)
   documentsCompleted      Boolean @default(false)
   bgvCompleted            Boolean @default(false)
+  bgvVerified             Boolean @default(false)
   bgvApplicantAcknowledged Boolean @default(false)
   finalSubmitted          Boolean @default(false)
   hireCompleted           Boolean @default(false)
@@ -348,10 +360,24 @@ model EmployeeAssignment {
   @@map("employee_assignments")
 }
 
+model ApplicantAssignment {
+  id            String   @id @default(uuid())
+  adminUserId   String
+  applicationId String
+  assignedAt    DateTime @default(now())
+  isActive      Boolean  @default(true)
+
+  @@unique([adminUserId, applicationId])
+  @@index([adminUserId, isActive])
+  @@index([applicationId, isActive])
+  @@map("applicant_assignments")
+}
+
 model AdminProfile {
   id          String   @id @default(uuid())
   adminUserId String   @unique
   company     String   @default("")
+  phone       String   @default("")
   status      String   @default("Active")
   permissions Json     @default("{}")
   createdAt   DateTime @default(now())

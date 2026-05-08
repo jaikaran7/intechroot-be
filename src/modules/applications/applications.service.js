@@ -19,6 +19,7 @@ import {
 import { applicantUsesPasswordLogin } from '../../utils/applicantAuthMode.js';
 import { uploadToStorage, getSignedUrl } from '../../config/supabase.js';
 import { getDefaultEmployeePortalPassword } from '../../utils/employeePortalDefaults.js';
+import { assertHrAdminPanelPermission, assertHrAdminPanelPermissionAny } from '../../utils/panelPermissions.js';
 
 /** Must match multer `limits.fileSize` for resume uploads (public apply form). */
 const MAX_RESUME_BYTES = 2 * 1024 * 1024;
@@ -80,6 +81,22 @@ function listApplicationRow(app) {
     ...app,
     stage: resolveDisplayStage(app),
   };
+}
+
+async function getHrAdminAssignedApplicationIds(adminUserId) {
+  const rows = await prisma.applicantAssignment.findMany({
+    where: { adminUserId, isActive: true },
+    select: { applicationId: true },
+  });
+  return rows.map((row) => row.applicationId);
+}
+
+async function assertHrAdminApplicationAccess(requestingUser, applicationId) {
+  if (requestingUser?.role !== 'hr_admin') return;
+  const assignedIds = await getHrAdminAssignedApplicationIds(requestingUser.userId);
+  if (!assignedIds.includes(String(applicationId))) {
+    throw new ForbiddenError('Application is not assigned to this HR admin');
+  }
 }
 
 async function loadApplicationBundle(id) {
@@ -186,7 +203,10 @@ export async function serializeApplication(application) {
   };
 }
 
-export async function getApplications(query) {
+export async function getApplications(query, requestingUser = null) {
+  if (requestingUser?.role === 'hr_admin') {
+    await assertHrAdminPanelPermission(requestingUser, 'viewApplicationJourney');
+  }
   const { page, limit, skip } = getPagination(query);
   const where = {};
 
@@ -202,6 +222,10 @@ export async function getApplications(query) {
   if (query.role) where.role = { equals: query.role, mode: 'insensitive' };
   if (query.stage) where.lifecycleStage = query.stage;
   if (query.status) where.status = { contains: query.status, mode: 'insensitive' };
+  if (requestingUser?.role === 'hr_admin') {
+    const assignedIds = await getHrAdminAssignedApplicationIds(requestingUser.userId);
+    where.id = assignedIds.length ? { in: assignedIds } : { in: [] };
+  }
 
   const [applications, total] = await Promise.all([
     prisma.application.findMany({
@@ -219,9 +243,16 @@ export async function getApplications(query) {
 }
 
 /** Dashboard aggregates for admin Applications page (KPIs + funnel). Optional `jobId` scopes counts. */
-export async function getApplicationStats(query = {}) {
+export async function getApplicationStats(query = {}, requestingUser = null) {
+  if (requestingUser?.role === 'hr_admin') {
+    await assertHrAdminPanelPermission(requestingUser, 'viewApplicationJourney');
+  }
   const baseWhere = {};
   if (query.jobId) baseWhere.jobId = query.jobId;
+  if (requestingUser?.role === 'hr_admin') {
+    const assignedIds = await getHrAdminAssignedApplicationIds(requestingUser.userId);
+    baseWhere.id = assignedIds.length ? { in: assignedIds } : { in: [] };
+  }
 
   const now = new Date();
   const start30 = new Date(now);
@@ -318,6 +349,11 @@ export async function getApplicationById(id, requestingUser) {
   const application = await loadApplicationBundle(id);
 
   if (!application) throw new NotFoundError('Application not found');
+
+  if (requestingUser?.role === 'hr_admin') {
+    await assertHrAdminPanelPermission(requestingUser, 'viewApplicationJourney');
+    await assertHrAdminApplicationAccess(requestingUser, id);
+  }
 
   // Applicants can only view their own application
   if (requestingUser?.role === 'applicant' && requestingUser.applicationId !== id) {
@@ -483,6 +519,10 @@ export async function createApplication(data, file = null) {
 }
 
 export async function advanceStage(id, actingUser, note) {
+  if (actingUser?.role === 'hr_admin') {
+    await assertHrAdminPanelPermissionAny(actingUser, ['advanceApplicationStage', 'editApplicationStage']);
+    await assertHrAdminApplicationAccess(actingUser, id);
+  }
   const application = await prisma.application.findUnique({ where: { id } });
   if (!application) throw new NotFoundError('Application not found');
 
@@ -514,7 +554,11 @@ export async function advanceStage(id, actingUser, note) {
   return serializeApplication(full);
 }
 
-export async function hireApplicant(id) {
+export async function hireApplicant(id, requestingUser = null) {
+  if (requestingUser?.role === 'hr_admin') {
+    await assertHrAdminPanelPermissionAny(requestingUser, ['finalHireRejectApplicant', 'editApplicationStage']);
+    await assertHrAdminApplicationAccess(requestingUser, id);
+  }
   const application = await prisma.application.findUnique({
     where: { id },
     include: { onboarding: true, documents: true },
@@ -525,6 +569,9 @@ export async function hireApplicant(id) {
   }
   if (!application.onboarding?.finalSubmitted) {
     throw new AppError('Applicant must complete onboarding before being hired', 400);
+  }
+  if (!application.onboarding?.bgvVerified) {
+    throw new AppError('Admin must confirm BGV verification before approving this applicant', 400);
   }
 
   const emailLower = String(application.email || '').trim().toLowerCase();
@@ -608,7 +655,7 @@ export async function hireApplicant(id) {
 
     const existingUser = await tx.user.findUnique({ where: { email: emailLower } });
     if (existingUser) {
-      if (existingUser.role === 'super_admin' || existingUser.role === 'admin') {
+      if (existingUser.role === 'super_admin' || existingUser.role === 'admin' || existingUser.role === 'ADMIN' || existingUser.role === 'hr_admin') {
         throw new ConflictError('This email is already used by an admin account.');
       }
       if (
@@ -689,7 +736,14 @@ export async function hireApplicant(id) {
 }
 
 /** Admin grants applicant portal access: creates/updates applicant user, emails temporary password. */
-export async function approvePortalAccess(id) {
+export async function approvePortalAccess(id, requestingUser = null) {
+  if (requestingUser?.role === 'hr_admin') {
+    await assertHrAdminPanelPermissionAny(requestingUser, [
+      'portalApproveRejectApplicant',
+      'acceptRejectApplicantDocuments',
+    ]);
+    await assertHrAdminApplicationAccess(requestingUser, id);
+  }
   const application = await prisma.application.findUnique({ where: { id } });
   if (!application) throw new NotFoundError('Application not found');
   if (/reject/i.test(application.status || '')) {
@@ -789,7 +843,15 @@ export async function approvePortalAccess(id) {
 }
 
 /** Admin rejects the application; removes portal user if any. */
-export async function rejectApplication(id) {
+export async function rejectApplication(id, requestingUser = null) {
+  if (requestingUser?.role === 'hr_admin') {
+    await assertHrAdminPanelPermissionAny(requestingUser, [
+      'portalApproveRejectApplicant',
+      'finalHireRejectApplicant',
+      'acceptRejectApplicantDocuments',
+    ]);
+    await assertHrAdminApplicationAccess(requestingUser, id);
+  }
   const application = await prisma.application.findUnique({ where: { id } });
   if (!application) throw new NotFoundError('Application not found');
   if (application.lifecycleStage === 'employee') {
@@ -821,7 +883,11 @@ export async function rejectApplication(id) {
   return { rejected: true };
 }
 
-export async function createInterview(applicationId, data) {
+export async function createInterview(applicationId, data, requestingUser = null) {
+  if (requestingUser?.role === 'hr_admin') {
+    await assertHrAdminPanelPermissionAny(requestingUser, ['scheduleInterview', 'sendInterviewLinks']);
+    await assertHrAdminApplicationAccess(requestingUser, applicationId);
+  }
   const exists = await prisma.application.findUnique({ where: { id: applicationId }, select: { id: true } });
   if (!exists) throw new NotFoundError('Application not found');
   const interview = await prisma.interview.create({
@@ -863,7 +929,11 @@ export async function createInterview(applicationId, data) {
   return interview;
 }
 
-export async function updateInterview(applicationId, interviewId, data) {
+export async function updateInterview(applicationId, interviewId, data, requestingUser = null) {
+  if (requestingUser?.role === 'hr_admin') {
+    await assertHrAdminPanelPermissionAny(requestingUser, ['scheduleInterview', 'sendInterviewLinks']);
+    await assertHrAdminApplicationAccess(requestingUser, applicationId);
+  }
   const interview = await prisma.interview.findFirst({
     where: { id: interviewId, applicationId },
   });
@@ -892,12 +962,20 @@ export async function deleteInterview(applicationId, interviewId, requestingUser
   if (requestingUser?.role === 'applicant' && requestingUser.applicationId !== applicationId) {
     throw new ForbiddenError();
   }
+  if (requestingUser?.role === 'hr_admin') {
+    await assertHrAdminPanelPermissionAny(requestingUser, ['scheduleInterview', 'sendInterviewLinks']);
+    await assertHrAdminApplicationAccess(requestingUser, applicationId);
+  }
 
   await prisma.interview.delete({ where: { id: interviewId } });
   return { deleted: true };
 }
 
-export async function createMessage(applicationId, text, createdBy) {
+export async function createMessage(applicationId, text, createdBy, requestingUser = null) {
+  if (requestingUser?.role === 'hr_admin') {
+    await assertHrAdminPanelPermission(requestingUser, 'sendMessagesToApplicants');
+    await assertHrAdminApplicationAccess(requestingUser, applicationId);
+  }
   const app = await prisma.application.findUnique({
     where: { id: applicationId },
     select: { id: true, name: true, email: true },

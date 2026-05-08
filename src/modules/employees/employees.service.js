@@ -2,6 +2,29 @@ import prisma from '../../config/db.js';
 import { NotFoundError, ForbiddenError, AppError } from '../../utils/errors.js';
 import { getPagination, paginatedResponse } from '../../utils/pagination.js';
 import { getSignedUrl } from '../../config/supabase.js';
+import { internalPoolEmployeeWhere, isInternalPoolEmployee } from '../../utils/internalPool.js';
+import {
+  assertHrAdminPanelPermission,
+  assertHrAdminPanelPermissionAny,
+  assertHrAdminExtraEmployeeDocumentRequestAccess,
+  getNormalizedPermissionsForAdminUser,
+} from '../../utils/panelPermissions.js';
+
+async function getHrAdminAssignedEmployeeIds(adminUserId) {
+  const rows = await prisma.employeeAssignment.findMany({
+    where: { adminUserId, isActive: true },
+    select: { employeeId: true },
+  });
+  return rows.map((r) => r.employeeId);
+}
+
+async function assertHrAdminCanManageEmployee(employeeId, requestingUser) {
+  if (requestingUser?.role !== 'hr_admin') return;
+  const row = await prisma.employee.findUnique({ where: { id: employeeId }, select: { client: true } });
+  if (!row || !isInternalPoolEmployee(row)) {
+    throw new ForbiddenError('You can only manage internal pool employees');
+  }
+}
 
 function asObjectRecord(value) {
   if (value == null) return {};
@@ -32,7 +55,7 @@ async function attachSignedEmployeePhoto(employee) {
   };
 }
 
-export async function getEmployees(query) {
+export async function getEmployees(query, requestingUser = null) {
   const { page, limit, skip } = getPagination(query);
   const where = {};
 
@@ -45,6 +68,17 @@ export async function getEmployees(query) {
   }
   if (query.department) where.department = { contains: query.department, mode: 'insensitive' };
   if (query.status) where.status = query.status;
+
+  if (requestingUser?.role === 'hr_admin') {
+    await assertHrAdminPanelPermissionAny(requestingUser, ['viewEmployeeDetails', 'viewEmployeeDocuments']);
+    const perms = await getNormalizedPermissionsForAdminUser(requestingUser.userId);
+    if (perms.viewEmployeeDetails) {
+      Object.assign(where, internalPoolEmployeeWhere());
+    } else {
+      const assignedIds = await getHrAdminAssignedEmployeeIds(requestingUser.userId);
+      where.id = assignedIds.length ? { in: assignedIds } : { in: [] };
+    }
+  }
 
   const [employees, total] = await Promise.all([
     prisma.employee.findMany({
@@ -65,6 +99,9 @@ export async function getEmployees(query) {
 }
 
 export async function getEmployeeById(id, requestingUser) {
+  if (requestingUser?.role === 'hr_admin') {
+    await assertHrAdminPanelPermissionAny(requestingUser, ['viewEmployeeDetails', 'viewEmployeeDocuments']);
+  }
   const employee = await prisma.employee.findUnique({
     where: { id },
     include: {
@@ -82,6 +119,20 @@ export async function getEmployeeById(id, requestingUser) {
   // Employee can only view their own record
   if (requestingUser?.role === 'employee' && requestingUser.employeeId !== id) {
     throw new ForbiddenError();
+  }
+
+  if (requestingUser?.role === 'hr_admin') {
+    const perms = await getNormalizedPermissionsForAdminUser(requestingUser.userId);
+    if (perms.viewEmployeeDetails) {
+      if (!isInternalPoolEmployee(employee)) {
+        throw new ForbiddenError();
+      }
+    } else {
+      const assignedIds = await getHrAdminAssignedEmployeeIds(requestingUser.userId);
+      if (!assignedIds.includes(String(id))) {
+        throw new ForbiddenError();
+      }
+    }
   }
 
   let applicationProfile = null;
@@ -127,6 +178,9 @@ const EMPLOYMENT_FLAT_KEYS = [
 
 /** @param {object | null} [requestingUser] */
 export async function updateEmployee(id, body, requestingUser = null) {
+  if (requestingUser?.role === 'hr_admin') {
+    await assertHrAdminPanelPermission(requestingUser, 'editEmployeeDetails');
+  }
   const existing = await prisma.employee.findUnique({ where: { id } });
   if (!existing) throw new NotFoundError('Employee not found');
 
@@ -138,6 +192,13 @@ export async function updateEmployee(id, body, requestingUser = null) {
   const isSuperAdmin = requestingUser?.role === 'super_admin';
   const existingPersonal = asObjectRecord(existing.personal);
   const existingEmployment = asObjectRecord(existing.employment);
+
+  if (requestingUser?.role === 'hr_admin') {
+    await assertHrAdminCanManageEmployee(id, requestingUser);
+    if (body.client !== undefined) {
+      throw new ForbiddenError('HR admin cannot change employee client placement');
+    }
+  }
 
   if (isEmployee) {
     const nextAddress =
@@ -197,16 +258,23 @@ export async function updateEmployee(id, body, requestingUser = null) {
   return prisma.employee.update({ where: { id }, data });
 }
 
-export async function updateEmployeeStatus(id, status) {
-  await getEmployeeById(id, null);
+export async function updateEmployeeStatus(id, status, requestingUser = null) {
+  if (requestingUser?.role === 'hr_admin') {
+    await assertHrAdminPanelPermission(requestingUser, 'editEmployeeDetails');
+  }
+  await getEmployeeById(id, requestingUser);
   return prisma.employee.update({ where: { id }, data: { status } });
 }
 
 /** Admin replaces the single “recent message” shown on the employee dashboard (stored in employment JSON — no DB migration). */
 export async function setEmployeeDashboardMessage(id, message, requestingUser) {
   const role = requestingUser?.role;
-  if (!['admin', 'super_admin'].includes(role)) {
+  if (!['admin', 'super_admin', 'hr_admin'].includes(role)) {
     throw new ForbiddenError();
+  }
+  if (role === 'hr_admin') {
+    await assertHrAdminPanelPermission(requestingUser, 'editEmployeeDetails');
+    await assertHrAdminCanManageEmployee(id, requestingUser);
   }
   const existing = await prisma.employee.findUnique({ where: { id } });
   if (!existing) throw new NotFoundError('Employee not found');
@@ -227,8 +295,12 @@ export async function addEmployeeExtraDocumentRequest(employeeId, name, requesti
   const role = requestingUser?.role;
   if (role === 'employee') {
     if (requestingUser.employeeId !== employeeId) throw new ForbiddenError();
-  } else if (!['admin', 'super_admin'].includes(role)) {
+  } else if (!['admin', 'super_admin', 'hr_admin'].includes(role)) {
     throw new ForbiddenError();
+  }
+
+  if (role === 'hr_admin') {
+    await assertHrAdminExtraEmployeeDocumentRequestAccess(requestingUser, employeeId);
   }
 
   const trimmed = String(name || '').trim();

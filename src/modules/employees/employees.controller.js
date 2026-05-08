@@ -16,7 +16,7 @@ export async function addExtraDocumentRequest(req, res, next) {
 
 export async function getEmployees(req, res, next) {
   try {
-    const result = await EmployeesService.getEmployees(req.query);
+    const result = await EmployeesService.getEmployees(req.query, req.user);
     res.json({ success: true, ...result });
   } catch (err) { next(err); }
 }
@@ -41,7 +41,7 @@ export async function updateEmployee(req, res, next) {
 
 export async function updateEmployeeStatus(req, res, next) {
   try {
-    const employee = await EmployeesService.updateEmployeeStatus(req.params.id, req.body.status);
+    const employee = await EmployeesService.updateEmployeeStatus(req.params.id, req.body.status, req.user);
     res.json({ success: true, data: employee });
   } catch (err) { next(err); }
 }
