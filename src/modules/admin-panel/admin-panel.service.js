@@ -3,6 +3,7 @@ import prisma from '../../config/db.js';
 import { AppError, ConflictError, ForbiddenError, NotFoundError } from '../../utils/errors.js';
 import { getPagination, paginatedResponse } from '../../utils/pagination.js';
 import { notifyEmployeeTimesheetRejected } from '../../utils/email.js';
+import { internalPoolEmployeeWhere } from '../../utils/internalPool.js';
 import {
   normalizePermissionsForUserRole,
   getNormalizedPermissionsForAdminUser,
@@ -68,6 +69,30 @@ async function getAssignedEmployeeIds(adminUserId) {
   return assignments.map((assignment) => assignment.employeeId);
 }
 
+/**
+ * Employee IDs whose timesheets this admin may see (admin-panel).
+ * Mirrors HR scope on GET /employees: internal pool when `viewEmployeeDetails`, else assignments only.
+ */
+async function getPanelScopedEmployeeIds(adminUserId) {
+  const user = await prisma.user.findUnique({ where: { id: adminUserId }, select: { role: true } });
+  if (!user) return [];
+
+  const assigned = await getAssignedEmployeeIds(adminUserId);
+  if (user.role !== 'hr_admin') {
+    return assigned;
+  }
+
+  const perms = await getNormalizedPermissionsForAdminUser(adminUserId);
+  if (perms.viewEmployeeDetails) {
+    const internalRows = await prisma.employee.findMany({
+      where: internalPoolEmployeeWhere(),
+      select: { id: true },
+    });
+    return [...new Set([...assigned, ...internalRows.map((r) => r.id)])];
+  }
+  return assigned;
+}
+
 async function getAssignedApplicationIds(adminUserId) {
   const assignments = await prisma.applicantAssignment.findMany({
     where: { adminUserId, isActive: true },
@@ -103,9 +128,9 @@ async function getAdminPermissions(adminUserId) {
 }
 
 async function getAdminActivitySummary(adminUserId) {
-  const assignedEmployeeIds = await getAssignedEmployeeIds(adminUserId);
+  const scopedEmployeeIds = await getPanelScopedEmployeeIds(adminUserId);
   const assignedApplicationIds = await getAssignedApplicationIds(adminUserId);
-  const where = assignedEmployeeIds.length ? { employeeId: { in: assignedEmployeeIds } } : { id: { in: [] } };
+  const where = scopedEmployeeIds.length ? { employeeId: { in: scopedEmployeeIds } } : { id: { in: [] } };
   const [approvalsDone, rejections, pending] = await Promise.all([
     prisma.timesheet.count({ where: { ...where, status: 'Approved' } }),
     prisma.timesheet.count({ where: { ...where, status: 'Rejected' } }),
@@ -168,15 +193,15 @@ async function getAdminSummaries(users) {
 }
 
 async function getAssignedTimesheetOrThrow(adminUserId, timesheetId) {
-  const assignedEmployeeIds = await getAssignedEmployeeIds(adminUserId);
-  if (assignedEmployeeIds.length === 0) {
+  const scopedEmployeeIds = await getPanelScopedEmployeeIds(adminUserId);
+  if (scopedEmployeeIds.length === 0) {
     throw new NotFoundError('Timesheet not found');
   }
 
   const timesheet = await prisma.timesheet.findFirst({
     where: {
       id: timesheetId,
-      employeeId: { in: assignedEmployeeIds },
+      employeeId: { in: scopedEmployeeIds },
     },
   });
 
@@ -518,10 +543,10 @@ export async function removeAdminApplicantAssignment(id, applicationId, requesti
 
 export async function getDashboard(requestingUser) {
   const adminUserId = requireAdminPanelUser(requestingUser);
-  const assignedEmployeeIds = await getAssignedEmployeeIds(adminUserId);
+  const scopedEmployeeIds = await getPanelScopedEmployeeIds(adminUserId);
 
-  const timesheetWhere = assignedEmployeeIds.length
-    ? { employeeId: { in: assignedEmployeeIds }, status: { not: 'Draft' } }
+  const timesheetWhere = scopedEmployeeIds.length
+    ? { employeeId: { in: scopedEmployeeIds }, status: { not: 'Draft' } }
     : { id: { in: [] } };
 
   const [adminUser, profile, employees, pendingTimesheets, approvedTimesheets, rejectedTimesheets, totalTimesheets] =
@@ -532,7 +557,7 @@ export async function getDashboard(requestingUser) {
       }),
       prisma.adminProfile.findUnique({ where: { adminUserId } }),
       prisma.employee.findMany({
-        where: { id: assignedEmployeeIds.length ? { in: assignedEmployeeIds } : { in: [] } },
+        where: { id: scopedEmployeeIds.length ? { in: scopedEmployeeIds } : { in: [] } },
         orderBy: { name: 'asc' },
       }),
       prisma.timesheet.count({ where: { ...timesheetWhere, status: 'Pending' } }),
@@ -569,17 +594,17 @@ export async function getDashboard(requestingUser) {
 
 export async function getTimesheets(query, requestingUser) {
   const adminUserId = requireAdminPanelUser(requestingUser);
-  const assignedEmployeeIds = await getAssignedEmployeeIds(adminUserId);
+  const scopedEmployeeIds = await getPanelScopedEmployeeIds(adminUserId);
   const { page, limit, skip } = getPagination(query);
 
   const where = {
-    employeeId: assignedEmployeeIds.length ? { in: assignedEmployeeIds } : { in: [] },
+    employeeId: scopedEmployeeIds.length ? { in: scopedEmployeeIds } : { in: [] },
     status: query.status || { not: 'Draft' },
   };
 
   if (query.weekStart) where.weekStart = new Date(query.weekStart);
   if (query.employeeId) {
-    if (!assignedEmployeeIds.includes(query.employeeId)) {
+    if (!scopedEmployeeIds.includes(query.employeeId)) {
       throw new ForbiddenError('Employee is not assigned to this admin');
     }
     where.employeeId = query.employeeId;
@@ -598,7 +623,7 @@ export async function getTimesheets(query, requestingUser) {
 
   console.log('[admin-panel] timesheets', {
     adminUserId,
-    assignedEmployeeIds,
+    scopedEmployeeIds,
     fetchedTimesheets: timesheets.map((timesheet) => timesheet.id),
   });
 
@@ -608,7 +633,7 @@ export async function getTimesheets(query, requestingUser) {
 export async function approveTimesheet(id, requestingUser) {
   const adminUserId = requireAdminPanelUser(requestingUser);
   const permissions = await getAdminPermissions(adminUserId);
-  if (!permissions.approveTimesheets) {
+  if (!permissions.approveTimesheets && !permissions.editTimesheets) {
     throw new ForbiddenError('This admin is not allowed to approve timesheets');
   }
   const timesheet = await getAssignedTimesheetOrThrow(adminUserId, id);
@@ -626,7 +651,7 @@ export async function approveTimesheet(id, requestingUser) {
 export async function rejectTimesheet(id, rejectionNote, requestingUser) {
   const adminUserId = requireAdminPanelUser(requestingUser);
   const permissions = await getAdminPermissions(adminUserId);
-  if (!permissions.rejectTimesheets) {
+  if (!permissions.rejectTimesheets && !permissions.editTimesheets) {
     throw new ForbiddenError('This admin is not allowed to reject timesheets');
   }
   const timesheet = await getAssignedTimesheetOrThrow(adminUserId, id);
