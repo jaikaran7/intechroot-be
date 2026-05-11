@@ -4,6 +4,7 @@ const personalShape = z.object({
   dateOfBirth: z.string().optional(),
   gender: z.string().optional(),
   address: z.string().optional(),
+  nationality: z.string().optional(),
 });
 
 const employmentShape = z.object({
@@ -20,6 +21,7 @@ const employmentShape = z.object({
   joiningDate: z.string().optional(),
   contractEndDate: z.string().optional(),
   directManager: z.string().optional(),
+  experience: z.string().optional(),
 });
 
 /** Accepts nested personal/employment and flat keys from the profile form (admin UI). */
@@ -41,6 +43,7 @@ export const updateEmployeeSchema = z
     dateOfBirth: z.string().optional(),
     gender: z.string().optional(),
     address: z.string().optional(),
+    nationality: z.string().optional(),
     employmentType: z.string().optional(),
     jobTitle: z.string().optional(),
     timeZone: z.string().optional(),
@@ -54,9 +57,41 @@ export const updateEmployeeSchema = z
     joiningDate: z.string().optional(),
     contractEndDate: z.string().optional(),
     directManager: z.string().optional(),
+    experience: z.string().optional(),
     status: z.enum(['Active', 'On_Leave', 'Inactive']).optional(),
   })
   .partial();
+
+/** Direct hire from admin wizard (no application). */
+export const createEmployeeSchema = z.object({
+  name: z.string().min(1),
+  email: z.string().email(),
+  role: z.string().min(1),
+  department: z.string().min(1),
+  phone: z.string().optional().default(''),
+  client: z.string().optional().default(''),
+  status: z.enum(['Active', 'On_Leave', 'Inactive']).optional().default('Active'),
+  personal: personalShape.optional(),
+  employment: employmentShape.optional(),
+  dateOfBirth: z.string().optional(),
+  gender: z.string().optional(),
+  address: z.string().optional(),
+  nationality: z.string().optional(),
+  employmentType: z.string().optional(),
+  jobTitle: z.string().optional(),
+  timeZone: z.string().optional(),
+  shiftType: z.string().optional(),
+  salary: z.string().optional(),
+  payFrequency: z.string().optional(),
+  contractType: z.string().optional(),
+  contractTypeDescription: z.string().optional(),
+  employmentStatus: z.string().optional(),
+  employmentStatusTag: z.string().optional(),
+  joiningDate: z.string().optional(),
+  contractEndDate: z.string().optional(),
+  directManager: z.string().optional(),
+  experience: z.string().optional(),
+});
 
 export const employeeStatusSchema = z.object({
   status: z.enum(['Active', 'On_Leave', 'Inactive']),

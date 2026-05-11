@@ -3,6 +3,7 @@ import { authenticate } from '../../middleware/auth.js';
 import { requireRole } from '../../middleware/rbac.js';
 import { validateBody } from '../../middleware/validate.js';
 import {
+  createEmployeeSchema,
   updateEmployeeSchema,
   employeeStatusSchema,
   extraDocumentRequestSchema,
@@ -14,6 +15,13 @@ import timesheetRoutes from '../timesheets/timesheets.routes.js';
 const router = Router();
 
 router.get('/', authenticate, requireRole('admin', 'super_admin', 'hr_admin'), EmployeesController.getEmployees);
+router.post(
+  '/',
+  authenticate,
+  requireRole('admin', 'super_admin'),
+  validateBody(createEmployeeSchema),
+  EmployeesController.createEmployee,
+);
 router.get('/:id', authenticate, requireRole('admin', 'super_admin', 'hr_admin', 'employee'), EmployeesController.getEmployeeById);
 router.post(
   '/:id/extra-document-requests',

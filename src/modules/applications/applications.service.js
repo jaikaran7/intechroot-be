@@ -19,6 +19,7 @@ import {
 import { applicantUsesPasswordLogin } from '../../utils/applicantAuthMode.js';
 import { uploadToStorage, getSignedUrl } from '../../config/supabase.js';
 import { getDefaultEmployeePortalPassword } from '../../utils/employeePortalDefaults.js';
+import { allocateNextEmployeeCode } from '../../utils/employeeCode.js';
 import { assertHrAdminPanelPermission, assertHrAdminPanelPermissionAny } from '../../utils/panelPermissions.js';
 
 /** Must match multer `limits.fileSize` for resume uploads (public apply form). */
@@ -42,14 +43,6 @@ const LIFECYCLE_MAP = {
 
 function generateReferenceId(numericSuffix) {
   return `ITR-${String(numericSuffix).padStart(5, '0')}`;
-}
-
-function currentYear2() {
-  return String(new Date().getFullYear()).slice(-2);
-}
-
-function generateEmployeeCode(year2, numericSuffix) {
-  return `INTR-${year2}-${String(numericSuffix).padStart(4, '0')}`;
 }
 
 function toDateOnlyString(value) {
@@ -585,18 +578,7 @@ export async function hireApplicant(id, requestingUser = null) {
 
     const passwordHash = await bcrypt.hash(getDefaultEmployeePortalPassword(), 12);
 
-    // Generate sequential employee code, scoped to current year (INTR-YY-0001).
-    const yy = currentYear2();
-    const prefix = `INTR-${yy}-`;
-    const lastForYear = await tx.employee.findFirst({
-      where: { employeeCode: { startsWith: prefix } },
-      orderBy: { employeeCode: 'desc' },
-      select: { employeeCode: true },
-    });
-    const lastNum = lastForYear?.employeeCode
-      ? Number(String(lastForYear.employeeCode).slice(prefix.length))
-      : 0;
-    const employeeCode = generateEmployeeCode(yy, (Number.isFinite(lastNum) ? lastNum : 0) + 1);
+    const employeeCode = await allocateNextEmployeeCode(tx);
 
     const employee = await tx.employee.create({
       data: {

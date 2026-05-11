@@ -1,6 +1,15 @@
 import { ForbiddenError } from '../../utils/errors.js';
 import * as EmployeesService from './employees.service.js';
 
+export async function createEmployee(req, res, next) {
+  try {
+    const employee = await EmployeesService.createEmployee(req.body, req.user);
+    res.status(201).json({ success: true, data: employee });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function addExtraDocumentRequest(req, res, next) {
   try {
     const { id } = req.params;

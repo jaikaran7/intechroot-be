@@ -1,5 +1,8 @@
+import bcrypt from 'bcryptjs';
 import prisma from '../../config/db.js';
-import { NotFoundError, ForbiddenError, AppError } from '../../utils/errors.js';
+import { NotFoundError, ForbiddenError, AppError, ConflictError } from '../../utils/errors.js';
+import { getDefaultEmployeePortalPassword } from '../../utils/employeePortalDefaults.js';
+import { allocateNextEmployeeCode } from '../../utils/employeeCode.js';
 import { getPagination, paginatedResponse } from '../../utils/pagination.js';
 import { getSignedUrl } from '../../config/supabase.js';
 import { internalPoolEmployeeWhere, isInternalPoolEmployee } from '../../utils/internalPool.js';
@@ -31,6 +34,23 @@ function asObjectRecord(value) {
   if (typeof value === 'object' && !Array.isArray(value)) return { ...value };
   return {};
 }
+
+const EMPLOYMENT_FLAT_KEYS = [
+  'employmentType',
+  'jobTitle',
+  'timeZone',
+  'shiftType',
+  'salary',
+  'payFrequency',
+  'contractType',
+  'contractTypeDescription',
+  'employmentStatus',
+  'employmentStatusTag',
+  'joiningDate',
+  'contractEndDate',
+  'directManager',
+  'experience',
+];
 
 async function signIfStoragePath(value) {
   if (!value || typeof value !== 'string') return value || null;
@@ -98,6 +118,105 @@ export async function getEmployees(query, requestingUser = null) {
   return paginatedResponse(withSignedPhotos, total, page, limit);
 }
 
+/**
+ * Create an employee without an application (admin direct hire).
+ * Creates portal User with default employee password (no welcome email here).
+ */
+export async function createEmployee(body, requestingUser) {
+  if (!['admin', 'super_admin'].includes(requestingUser?.role)) {
+    throw new ForbiddenError();
+  }
+
+  const emailLower = String(body.email || '').trim().toLowerCase();
+  const existingEmp = await prisma.employee.findUnique({ where: { email: emailLower } });
+  if (existingEmp) {
+    throw new ConflictError('An employee with this email already exists');
+  }
+
+  const passwordHash = await bcrypt.hash(getDefaultEmployeePortalPassword(), 12);
+  const displayName = String(body.name || '').trim();
+
+  const { employee } = await prisma.$transaction(async (tx) => {
+    const employeeCode = await allocateNextEmployeeCode(tx);
+
+    let personal = { ...asObjectRecord(body.personal) };
+    for (const key of ['dateOfBirth', 'gender', 'address', 'nationality']) {
+      if (body[key] !== undefined) personal[key] = body[key];
+    }
+
+    let employment = { ...asObjectRecord(body.employment) };
+    for (const key of EMPLOYMENT_FLAT_KEYS) {
+      if (body[key] !== undefined) employment[key] = body[key];
+    }
+    if (!employment.jobTitle) employment.jobTitle = body.role;
+    if (!employment.employmentType) employment.employmentType = 'Full-Time';
+    if (!employment.joiningDate) employment.joiningDate = new Date().toISOString();
+    if (!employment.payFrequency) employment.payFrequency = 'Bi-Weekly';
+    if (!employment.contractType) employment.contractType = 'Permanent';
+    if (!employment.employmentStatus) employment.employmentStatus = 'Active Deployment';
+    if (!employment.employmentStatusTag) employment.employmentStatusTag = 'active';
+    if (!employment.shiftType) employment.shiftType = 'Standard';
+    if (!employment.experience) employment.experience = '';
+
+    const employee = await tx.employee.create({
+      data: {
+        applicationId: null,
+        employeeCode,
+        name: displayName,
+        email: emailLower,
+        phone: body.phone != null ? String(body.phone) : '',
+        role: String(body.role || '').trim(),
+        department: String(body.department || '').trim(),
+        client: body.client != null ? String(body.client) : '',
+        status: body.status || 'Active',
+        personal,
+        employment,
+      },
+    });
+
+    const existingUser = await tx.user.findUnique({ where: { email: emailLower } });
+    if (existingUser) {
+      if (
+        existingUser.role === 'super_admin' ||
+        existingUser.role === 'admin' ||
+        existingUser.role === 'ADMIN' ||
+        existingUser.role === 'hr_admin'
+      ) {
+        throw new ConflictError('This email is already used by an admin account.');
+      }
+      if (existingUser.role === 'applicant' && existingUser.applicantApplicationId) {
+        throw new ConflictError(
+          'This email is tied to an applicant portal account. Use the application hiring flow or a different email.',
+        );
+      }
+      await tx.user.update({
+        where: { id: existingUser.id },
+        data: {
+          passwordHash,
+          name: displayName,
+          role: 'employee',
+          applicantApplicationId: null,
+          isActive: true,
+        },
+      });
+    } else {
+      await tx.user.create({
+        data: {
+          email: emailLower,
+          name: displayName,
+          passwordHash,
+          role: 'employee',
+          applicantApplicationId: null,
+        },
+      });
+    }
+
+    return { employee };
+  });
+
+  return getEmployeeById(employee.id, requestingUser);
+}
+
 export async function getEmployeeById(id, requestingUser) {
   if (requestingUser?.role === 'hr_admin') {
     await assertHrAdminPanelPermissionAny(requestingUser, ['viewEmployeeDetails', 'viewEmployeeDocuments']);
@@ -160,22 +279,6 @@ export async function getEmployeeById(id, requestingUser) {
   return { ...signedEmployee, applicationProfile: signedAppPhoto };
 }
 
-const EMPLOYMENT_FLAT_KEYS = [
-  'employmentType',
-  'jobTitle',
-  'timeZone',
-  'shiftType',
-  'salary',
-  'payFrequency',
-  'contractType',
-  'contractTypeDescription',
-  'employmentStatus',
-  'employmentStatusTag',
-  'joiningDate',
-  'contractEndDate',
-  'directManager',
-];
-
 /** @param {object | null} [requestingUser] */
 export async function updateEmployee(id, body, requestingUser = null) {
   if (requestingUser?.role === 'hr_admin') {
@@ -226,7 +329,7 @@ export async function updateEmployee(id, body, requestingUser = null) {
   if (body.personal && typeof body.personal === 'object') {
     Object.assign(personal, body.personal);
   }
-  for (const key of ['dateOfBirth', 'gender', 'address']) {
+  for (const key of ['dateOfBirth', 'gender', 'address', 'nationality']) {
     if (body[key] !== undefined) personal[key] = body[key];
   }
 
